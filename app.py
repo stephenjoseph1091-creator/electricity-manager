@@ -885,68 +885,112 @@ def render_decision(cfg: dict) -> None:
 
     st.markdown("---")
 
-    # --- Top 2 recommendations ---
+    # --- Historical billing comparison chart ---
+    st.subheader("What Would You Have Paid? — Current Plan vs Top Alternative")
+
+    best_label = f"{best.get('company_name', '')} — {best.get('plan_name', '')}"
+    current_label = f"{cfg['provider']} — {cfg['plan_name']} (current)"
+
+    chart_rows = []
+    for _, urow in usage_df.iterrows():
+        kwh = urow["kwh"]
+        dt = urow["date"]
+        curr_cost = current_plan_cost(kwh, cfg["base_charge"], cfg["energy_rate"],
+                                      cfg["tdu_fixed"], cfg["tdu_rate"])
+        best_cost = plan_cost_at_kwh(best, kwh)
+        chart_rows.append({
+            "Period": dt.strftime("%b %Y"),
+            current_label: round(curr_cost, 2),
+            best_label: round(best_cost, 2),
+        })
+
+    chart_df = pd.DataFrame(chart_rows)
+    chart_melted = chart_df.melt(id_vars="Period", var_name="Plan", value_name="Est. Bill ($)")
+
+    fig_compare = px.line(
+        chart_melted,
+        x="Period",
+        y="Est. Bill ($)",
+        color="Plan",
+        markers=True,
+        color_discrete_map={
+            current_label: "#d9534f",
+            best_label: "#00A651",
+        },
+        line_shape="spline",
+    )
+    fig_compare.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(tickangle=-45),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        margin=dict(t=60, b=60),
+    )
+    fig_compare.update_traces(line_width=2.5, marker_size=7)
+    st.plotly_chart(fig_compare, use_container_width=True)
+
+    total_current = chart_df[current_label].sum()
+    total_best = chart_df[best_label].sum()
+    diff = total_current - total_best
+    st.caption(
+        f"Over your {len(usage_df)} billing periods — current plan total: **${total_current:,.2f}** "
+        f"vs {best_label}: **${total_best:,.2f}** — difference: **${diff:,.2f}**"
+    )
+
+    st.markdown("---")
+
+    # --- Top plans table ---
     st.subheader("Top Plan Recommendations")
 
-    def _plan_card(plan: pd.Series, rank: int, card_key: str) -> None:
-        p_name = plan.get("plan_name", "Unknown Plan")
-        p_provider = plan.get("company_name", "Unknown")
-        p_term = plan.get("term_value", "?")
-        post_sav = plan.get("post_contract_savings", 0)
-        net_now = plan.get("net_now", 0)
-        p1000 = plan.get("price_kwh1000", 0)
-        p500 = plan.get("price_kwh500", 0)
-        p2000 = plan.get("price_kwh2000", 0)
-        hist_sav = plan.get("historical_savings", 0)
-        efl = plan.get("fact_sheet", "")
-        enroll = plan.get("go_to_plan", "")
+    top_plans = scored.head(10).copy()
+    table_data = []
+    for i, (_, p) in enumerate(top_plans.iterrows()):
+        table_data.append({
+            "#": i + 1,
+            "Provider": p.get("company_name", ""),
+            "Plan": p.get("plan_name", ""),
+            "Term": f"{int(p.get('term_value', 0))} mo",
+            "¢ @ 500": f"{float(p.get('price_kwh500', 0)):.1f}",
+            "¢ @ 1000": f"{float(p.get('price_kwh1000', 0)):.1f}",
+            "¢ @ 2000": f"{float(p.get('price_kwh2000', 0)):.1f}",
+            "12-mo Savings": f"${p.get('post_contract_savings', 0):,.0f}",
+            "Switch-Now Net": f"${p.get('net_now', 0):,.0f}",
+        })
 
-        border = "#00A651" if rank == 1 else "#888888"
-        label = "⭐ #1 Recommendation" if rank == 1 else "🥈 Runner-up"
+    st.dataframe(
+        pd.DataFrame(table_data),
+        use_container_width=True,
+        hide_index=True,
+    )
 
-        st.markdown(
-            f"""
-            <div style="border:2px solid {border};border-radius:8px;padding:16px;margin-bottom:8px;">
-            <span style="color:{border};font-weight:600;">{label}</span>
-            <h3 style="margin:4px 0;">{p_provider}</h3>
-            <h4 style="margin:0 0 8px;color:#555;">{p_name}</h4>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    st.caption(
+        "**12-mo Savings** = estimated savings vs your current plan in the 12 months after your contract ends.  "
+        "**Switch-Now Net** = savings over remaining contract months minus the ETF — positive means it's worth paying the ETF today."
+    )
+
+    st.markdown("---")
+
+    # --- Select a plan to enroll ---
+    st.subheader("Select a Plan to Enroll In")
+    plan_labels = [
+        f"{p.get('company_name', '')} — {p.get('plan_name', '')}"
+        for _, p in top_plans.iterrows()
+    ]
+    for i, (label, (_, p)) in enumerate(zip(plan_labels, top_plans.iterrows())):
+        col_label, col_efl, col_enroll, col_select = st.columns([4, 1, 1, 1])
+        col_label.markdown(
+            f"**{i+1}. {label}**  \n"
+            f"{int(p.get('term_value', 0))} months · "
+            f"{float(p.get('price_kwh1000', 0)):.1f}¢/kWh @ 1000 · "
+            f"12-mo savings: ${p.get('post_contract_savings', 0):,.0f}"
         )
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Term", f"{p_term} mo")
-        m2.metric("Rate @ 500 / 1000 / 2000 kWh",
-                  f"{float(p500):.1f}¢ / {float(p1000):.1f}¢ / {float(p2000):.1f}¢")
-        m3.metric("12-mo Savings After Switch", f"${post_sav:,.2f}")
-
-        m4, m5 = st.columns(2)
-        m4.metric("Switch-Now Net (after ETF)", f"${net_now:,.2f}",
-                  delta="worth switching now" if net_now > 0 else "wait for contract end",
-                  delta_color="normal" if net_now > 0 else "off")
-        m5.metric("Historical Savings (vs your data)", f"${hist_sav:,.2f}")
-
-        btn_col1, btn_col2, btn_col3 = st.columns(3)
-        with btn_col1:
-            if st.button(f"✅ Select this plan for enrollment", key=f"select_{card_key}",
-                         type="primary"):
-                st.session_state["selected_plan"] = plan.to_dict()
-                st.success(f"Selected **{p_provider} — {p_name}**. Go to the **Enroll** tab.")
-        with btn_col2:
-            if efl:
-                st.link_button("📄 View EFL", efl)
-        with btn_col3:
-            if enroll:
-                st.link_button("🔗 Enroll →", enroll)
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        _plan_card(best, 1, "best")
-    with col_b:
-        if second is not None:
-            _plan_card(second, 2, "second")
-        else:
-            st.info("Only one qualifying plan found.")
+        if p.get("fact_sheet"):
+            col_efl.link_button("EFL", p["fact_sheet"])
+        if p.get("go_to_plan"):
+            col_enroll.link_button("Enroll →", p["go_to_plan"])
+        if col_select.button("Select ✓", key=f"dec_select_{i}", type="primary"):
+            st.session_state["selected_plan"] = p.to_dict()
+            st.success(f"Selected **{label}** — go to the **Enroll** tab to proceed.")
 
     st.markdown("---")
 
