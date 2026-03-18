@@ -195,9 +195,9 @@ def _get_price_at(row: pd.Series, kwh: float) -> float:
     Returns rate in $/kWh.
     """
     try:
-        p500 = float(row.get("price500", 0) or 0)
-        p1000 = float(row.get("price1000", 0) or 0)
-        p2000 = float(row.get("price2000", 0) or 0)
+        p500 = float(row.get("price_kwh500", 0) or 0)
+        p1000 = float(row.get("price_kwh1000", 0) or 0)
+        p2000 = float(row.get("price_kwh2000", 0) or 0)
     except (TypeError, ValueError):
         return 0.0
 
@@ -244,7 +244,7 @@ def filter_plans(df: pd.DataFrame, allow_short_term: bool, allow_bill_credit: bo
         df = df[is_fixed]
 
     # Drop plans with missing or zero price points
-    for col in ["price500", "price1000", "price2000"]:
+    for col in ["price_kwh500", "price_kwh1000", "price_kwh2000"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
             df = df[df[col].notna() & (df[col] > 0)]
@@ -256,7 +256,7 @@ def filter_plans(df: pd.DataFrame, allow_short_term: bool, allow_bill_credit: bo
             df = df[df["term_value"] > 3]
 
     if not allow_bill_credit:
-        df = df[~_flag("new_customer")]  # best available proxy for bill-credit plans
+        df = df[~_flag("minimum_usage")]  # minimum_usage=true signals bill-credit plans
 
     return df.reset_index(drop=True)
 
@@ -728,7 +728,7 @@ def render_compare(cfg: dict) -> None:
         }
     else:
         st.info("Upload usage data (sidebar) to see savings estimates.")
-        sort_options = {"Price @ 1000 kWh (¢)": "price1000"}
+        sort_options = {"Price @ 1000 kWh (¢)": "price_kwh1000"}
 
     sort_label = st.selectbox("Sort by", list(sort_options.keys()))
     sort_col = sort_options[sort_label]
@@ -742,15 +742,15 @@ def render_compare(cfg: dict) -> None:
         "company_name": "Provider",
         "plan_name": "Plan Name",
         "term_value": "Term (mo)",
-        "price500": "500 kWh ¢",
-        "price1000": "1000 kWh ¢",
-        "price2000": "2000 kWh ¢",
+        "price_kwh500": "¢/kWh @ 500",
+        "price_kwh1000": "¢/kWh @ 1000",
+        "price_kwh2000": "¢/kWh @ 2000",
     }
     if usage_df is not None:
         display_cols_map.update({
             "avg_rate_cents": "Avg Rate ¢/kWh",
             "historical_savings": "Hist. Savings $",
-            "post_contract_savings": "Post-Contract 12-mo $",
+            "post_contract_savings": "12-mo Savings $",
             "net_now": "Switch-Now Net $",
         })
 
@@ -774,24 +774,33 @@ def render_compare(cfg: dict) -> None:
 
     st.markdown("---")
 
-    # Plan selector — populates Enroll tab
-    plan_options = []
-    for _, row in filtered.iterrows():
+    # Top plan cards with Select buttons
+    st.subheader("Top Plans — Select One to Enroll")
+    st.caption("Click **Select this plan** on any row to load it into the Enroll tab.")
+
+    top_n = min(10, len(filtered))
+    for i, (_, row) in enumerate(filtered.head(top_n).iterrows()):
         name = str(row.get("plan_name", "Unknown Plan"))
         provider = str(row.get("company_name", "Unknown Provider"))
-        plan_options.append(f"{provider} — {name}")
+        term = row.get("term_value", "?")
+        r1000 = row.get("price_kwh1000", 0)
+        post_sav = row.get("post_contract_savings", None)
+        net_now = row.get("net_now", None)
 
-    if plan_options:
-        st.subheader("Select a plan to review →")
-        choice = st.selectbox(
-            "Pick a plan to see details in the Enroll tab",
-            options=["(none)"] + plan_options,
-            key="plan_selector",
-        )
-        if choice != "(none)":
-            idx = plan_options.index(choice)
-            st.session_state["selected_plan"] = filtered.iloc[idx].to_dict()
-            st.success(f"Selected: **{choice}** — switch to the Enroll tab to proceed.")
+        col_info, col_btn = st.columns([5, 1])
+        with col_info:
+            sav_str = f"  |  12-mo savings: **${post_sav:,.0f}**" if post_sav is not None else ""
+            net_str = f"  |  Switch-now net: **${net_now:,.0f}**" if net_now is not None else ""
+            st.markdown(
+                f"**{i+1}. {provider} — {name}**  \n"
+                f"{term} months  |  {float(r1000):.1f}¢/kWh @ 1000 kWh{sav_str}{net_str}"
+            )
+        with col_btn:
+            if st.button("Select →", key=f"select_plan_{i}"):
+                st.session_state["selected_plan"] = row.to_dict()
+                st.success(f"✓ Selected **{provider} — {name}**. Switch to the **Enroll** tab.")
+
+        st.divider()
 
 
 # ---------------------------------------------------------------------------
@@ -879,23 +888,25 @@ def render_decision(cfg: dict) -> None:
     # --- Top 2 recommendations ---
     st.subheader("Top Plan Recommendations")
 
-    def _plan_card(plan: pd.Series, rank: int) -> None:
-        avg_kwh = usage_df["kwh"].mean()
+    def _plan_card(plan: pd.Series, rank: int, card_key: str) -> None:
         p_name = plan.get("plan_name", "Unknown Plan")
         p_provider = plan.get("company_name", "Unknown")
         p_term = plan.get("term_value", "?")
-        p_rate = plan.get("avg_rate_cents", 0)
-        hist_sav = plan.get("historical_savings", 0)
         post_sav = plan.get("post_contract_savings", 0)
         net_now = plan.get("net_now", 0)
-        p1000 = plan.get("price1000", 0)
+        p1000 = plan.get("price_kwh1000", 0)
+        p500 = plan.get("price_kwh500", 0)
+        p2000 = plan.get("price_kwh2000", 0)
+        hist_sav = plan.get("historical_savings", 0)
+        efl = plan.get("fact_sheet", "")
+        enroll = plan.get("go_to_plan", "")
 
-        border = "#00A651" if rank == 1 else "#cccccc"
-        label = "⭐ Best Match" if rank == 1 else "Runner-up"
+        border = "#00A651" if rank == 1 else "#888888"
+        label = "⭐ #1 Recommendation" if rank == 1 else "🥈 Runner-up"
 
         st.markdown(
             f"""
-            <div style="border:2px solid {border};border-radius:8px;padding:16px;margin-bottom:12px;">
+            <div style="border:2px solid {border};border-radius:8px;padding:16px;margin-bottom:8px;">
             <span style="color:{border};font-weight:600;">{label}</span>
             <h3 style="margin:4px 0;">{p_provider}</h3>
             <h4 style="margin:0 0 8px;color:#555;">{p_name}</h4>
@@ -903,18 +914,37 @@ def render_decision(cfg: dict) -> None:
             """,
             unsafe_allow_html=True,
         )
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3 = st.columns(3)
         m1.metric("Term", f"{p_term} mo")
-        m2.metric("Rate @ 1000 kWh", f"{float(p1000):.2f} ¢/kWh")
-        m3.metric("Post-Contract 12-mo Savings", f"${post_sav:.2f}")
-        m4.metric("Switch-Now Net", f"${net_now:.2f}")
+        m2.metric("Rate @ 500 / 1000 / 2000 kWh",
+                  f"{float(p500):.1f}¢ / {float(p1000):.1f}¢ / {float(p2000):.1f}¢")
+        m3.metric("12-mo Savings After Switch", f"${post_sav:,.2f}")
+
+        m4, m5 = st.columns(2)
+        m4.metric("Switch-Now Net (after ETF)", f"${net_now:,.2f}",
+                  delta="worth switching now" if net_now > 0 else "wait for contract end",
+                  delta_color="normal" if net_now > 0 else "off")
+        m5.metric("Historical Savings (vs your data)", f"${hist_sav:,.2f}")
+
+        btn_col1, btn_col2, btn_col3 = st.columns(3)
+        with btn_col1:
+            if st.button(f"✅ Select this plan for enrollment", key=f"select_{card_key}",
+                         type="primary"):
+                st.session_state["selected_plan"] = plan.to_dict()
+                st.success(f"Selected **{p_provider} — {p_name}**. Go to the **Enroll** tab.")
+        with btn_col2:
+            if efl:
+                st.link_button("📄 View EFL", efl)
+        with btn_col3:
+            if enroll:
+                st.link_button("🔗 Enroll →", enroll)
 
     col_a, col_b = st.columns(2)
     with col_a:
-        _plan_card(best, 1)
+        _plan_card(best, 1, "best")
     with col_b:
         if second is not None:
-            _plan_card(second, 2)
+            _plan_card(second, 2, "second")
         else:
             st.info("Only one qualifying plan found.")
 
@@ -962,7 +992,7 @@ def render_enroll(cfg: dict) -> None:
     p_name = selected.get("plan_name", "Unknown Plan")
     p_provider = selected.get("company_name", "Unknown Provider")
     p_term = selected.get("term_value", "?")
-    p1000 = selected.get("price1000", 0)
+    p1000 = selected.get("price_kwh1000", 0)
     post_sav = selected.get("post_contract_savings", "N/A")
     net_now = selected.get("net_now", "N/A")
     efl_url = selected.get("fact_sheet", selected.get("efl_url", "#"))
