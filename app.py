@@ -1173,7 +1173,7 @@ def render_decision(cfg: dict) -> None:
             col_enroll.link_button("Enroll →", p["go_to_plan"])
         if col_select.button("Select ✓", key=f"dec_select_{i}", type="primary"):
             st.session_state["selected_plan"] = p.to_dict()
-            st.success(f"Selected **{label}** — go to the **Enroll** tab to proceed.")
+            st.success(f"Selected **{label}** — scroll down to see the enrollment checklist and AI assistant.")
 
     st.markdown("---")
 
@@ -1198,166 +1198,132 @@ def render_decision(cfg: dict) -> None:
             "Add an Anthropic API key in the sidebar to enable AI explanations."
         )
 
-
-# ---------------------------------------------------------------------------
-# Tab 4: Enroll
-# ---------------------------------------------------------------------------
-
-def render_enroll(cfg: dict) -> None:
-    """Render the Enroll tab."""
-    st.header("Enroll in a New Plan")
-
+    # --- Enrollment checklist and AI chat (shown when a plan is selected) ---
     selected: dict | None = st.session_state.get("selected_plan")
+    if selected is not None:
+        st.markdown("---")
 
-    if selected is None:
-        st.info("Go to **Compare Plans** and select a plan first.")
-        return
+        p_name = selected.get("plan_name", "Unknown Plan")
+        p_provider = selected.get("company_name", "Unknown Provider")
+        p_term = selected.get("term_value", "?")
+        p1000 = selected.get("price_kwh1000", 0)
+        post_sav = selected.get("post_contract_savings", "N/A")
+        net_now_sel = selected.get("net_now", "N/A")
+        efl_url = selected.get("fact_sheet", selected.get("efl_url", "#"))
+        enroll_url = selected.get("enroll_url", selected.get("go_to_plan", "#"))
 
-    usage_df: pd.DataFrame | None = st.session_state.get("usage_df")
-
-    # --- Selected plan card ---
-    p_name = selected.get("plan_name", "Unknown Plan")
-    p_provider = selected.get("company_name", "Unknown Provider")
-    p_term = selected.get("term_value", "?")
-    p1000 = selected.get("price_kwh1000", 0)
-    post_sav = selected.get("post_contract_savings", "N/A")
-    net_now = selected.get("net_now", "N/A")
-    efl_url = selected.get("fact_sheet", selected.get("efl_url", "#"))
-    enroll_url = selected.get("enroll_url", selected.get("go_to_plan", "#"))
-
-    st.markdown(
-        f"""
-        <div style="background:#f0fdf4;border:2px solid #00A651;border-radius:8px;padding:20px;margin-bottom:16px;">
-        <h2 style="margin:0 0 4px;">{p_provider}</h2>
-        <h3 style="margin:0 0 12px;color:#444;">{p_name}</h3>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Contract Term", f"{p_term} months")
-    c2.metric("Rate @ 1000 kWh", f"{float(p1000):.2f} ¢/kWh")
-    if isinstance(post_sav, (int, float)):
-        c3.metric("Post-Contract 12-mo Savings", f"${post_sav:.2f}")
-    else:
-        c3.metric("Post-Contract 12-mo Savings", "—")
-    if isinstance(net_now, (int, float)):
-        c4.metric("Switch-Now Net (after ETF)", f"${net_now:.2f}")
-    else:
-        c4.metric("Switch-Now Net (after ETF)", "—")
-
-    st.markdown("---")
-
-    # --- EFL and enrollment links ---
-    link_col1, link_col2 = st.columns(2)
-    with link_col1:
-        if efl_url and efl_url != "#":
-            st.link_button("📄 View Electricity Facts Label (EFL)", efl_url)
-        else:
-            st.button("📄 EFL not available", disabled=True)
-    with link_col2:
-        if enroll_url and enroll_url != "#":
-            st.link_button("🔗 Enroll with Provider →", enroll_url, type="primary")
-        else:
-            st.button("🔗 Enroll link not available", disabled=True)
-
-    st.markdown("---")
-
-    # --- Enrollment checklist ---
-    st.subheader("📋 Enrollment Checklist")
-    st.markdown(
-        """
-        Before you call or go online to switch, gather the following:
-
-        - [ ] **ESIID number** — found on your current electricity bill (16-digit number)
-        - [ ] **Service address** — confirm the address you want service at
-        - [ ] **Requested start date** — must be a future business date; typically 3–5 days out
-        - [ ] **Credit card** — for deposit if required (many plans require no deposit)
-        - [ ] **Note new contract end date** — once enrolled, mark it in your calendar
-
-        **After enrolling:**
-        - [ ] Save the confirmation email
-        - [ ] Note that the switch takes 1–2 billing cycles to take effect
-        - [ ] Download and save your new Electricity Facts Label (EFL)
-        """
-    )
-
-    st.markdown("---")
-
-    # --- AI Chat assistant ---
-    st.subheader("🤖 AI Enrollment Assistant")
-
-    api_key = _get_api_key()
-
-    if not api_key:
-        st.warning(
-            "Add an Anthropic API key in the sidebar to enable the AI chat assistant."
+        st.markdown(
+            f"""
+            <div style="background:#f0fdf4;border:2px solid #00A651;border-radius:8px;padding:20px;margin-bottom:16px;">
+            <h3 style="margin:0 0 4px;">Selected: {p_provider} — {p_name}</h3>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
-        return
 
-    # Build system prompt with full context
-    plans_df = st.session_state.get("plans_df")
-    best_plan = None
-    if plans_df is not None and usage_df is not None:
-        try:
-            filtered = filter_plans(plans_df, False, False)
-            if not filtered.empty:
-                scored = score_plans(
-                    filtered, usage_df,
-                    cfg["base_charge"], cfg["energy_rate"],
-                    cfg["tdu_fixed"], cfg["tdu_rate"],
-                    cfg["etf"], cfg["contract_end"],
-                )
-                best_plan = scored.sort_values("post_contract_savings", ascending=False).iloc[0]
-        except Exception:
-            pass
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Contract Term", f"{p_term} months")
+        c2.metric("Rate @ 1000 kWh", f"{float(p1000):.2f} ¢/kWh")
+        if isinstance(post_sav, (int, float)):
+            c3.metric("Post-Contract 12-mo Savings", f"${post_sav:.2f}")
+        else:
+            c3.metric("Post-Contract 12-mo Savings", "—")
+        if isinstance(net_now_sel, (int, float)):
+            c4.metric("Switch-Now Net (after ETF)", f"${net_now_sel:.2f}")
+        else:
+            c4.metric("Switch-Now Net (after ETF)", "—")
 
-    decision_str = "Recommendation not yet computed"
-    months_rem = cfg["months_remaining"]
-    if months_rem == 0:
-        decision_str = "SWITCH NOW — Contract already ended"
-    elif best_plan is not None and best_plan.get("net_now", 0) > 0:
-        decision_str = "SWITCH NOW — ETF is worth paying"
-    elif cfg["contract_end"]:
-        decision_str = f"STAY — Switch on {cfg['contract_end'].strftime('%B %d, %Y')}"
+        link_col1, link_col2 = st.columns(2)
+        with link_col1:
+            if efl_url and efl_url != "#":
+                st.link_button("📄 View Electricity Facts Label (EFL)", efl_url)
+            else:
+                st.button("📄 EFL not available", disabled=True)
+        with link_col2:
+            if enroll_url and enroll_url != "#":
+                st.link_button("🔗 Enroll with Provider →", enroll_url, type="primary")
+            else:
+                st.button("🔗 Enroll link not available", disabled=True)
 
-    sys_prompt = _build_system_prompt(
-        cfg["plan_name"], cfg["provider"], usage_df, best_plan, decision_str
-    )
-    # Add enrollment-specific context
-    sys_prompt += (
-        f"\n\nThe user is currently looking at enrolling in: {p_name} from {p_provider}. "
-        "Help them understand the enrollment process, what to watch out for, and answer "
-        "any questions about their Texas electricity plan."
-    )
+        with st.expander("📋 Enrollment Checklist", expanded=True):
+            st.markdown(
+                """
+                Before you call or go online to switch, gather the following:
 
-    # Display chat history
-    for msg in st.session_state["chat_history"]:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+                - [ ] **ESIID number** — found on your current electricity bill (16-digit number)
+                - [ ] **Service address** — confirm the address you want service at
+                - [ ] **Requested start date** — must be a future business date; typically 3–5 days out
+                - [ ] **Credit card** — for deposit if required (many plans require no deposit)
+                - [ ] **Note new contract end date** — once enrolled, mark it in your calendar
 
-    # Chat input
-    user_input = st.chat_input("Ask anything about enrolling, your plan, or Texas electricity…")
-    if user_input:
-        # Append user message and display it
-        st.session_state["chat_history"].append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
+                **After enrolling:**
+                - [ ] Save the confirmation email
+                - [ ] Note that the switch takes 1–2 billing cycles to take effect
+                - [ ] Download and save your new Electricity Facts Label (EFL)
+                """
+            )
 
-        # Get AI response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking…"):
-                reply = ai_chat(st.session_state["chat_history"], sys_prompt, api_key)
-            st.markdown(reply)
+        st.markdown("---")
+        st.subheader("🤖 AI Enrollment Assistant")
 
-        st.session_state["chat_history"].append({"role": "assistant", "content": reply})
+        api_key_chat = _get_api_key()
 
-    # Clear chat button
-    if st.session_state["chat_history"]:
-        if st.button("🗑️ Clear chat history"):
-            st.session_state["chat_history"] = []
-            st.rerun()
+        if not api_key_chat:
+            st.warning("Add an Anthropic API key in the sidebar to enable the AI chat assistant.")
+        else:
+            plans_df_chat = st.session_state.get("plans_df")
+            best_plan_chat = None
+            if plans_df_chat is not None and usage_df is not None:
+                try:
+                    filtered_chat = filter_plans(plans_df_chat, False, False)
+                    if not filtered_chat.empty:
+                        scored_chat = score_plans(
+                            filtered_chat, usage_df,
+                            cfg["base_charge"], cfg["energy_rate"],
+                            cfg["tdu_fixed"], cfg["tdu_rate"],
+                            cfg["etf"], cfg["contract_end"],
+                        )
+                        best_plan_chat = scored_chat.sort_values("post_contract_savings", ascending=False).iloc[0]
+                except Exception:
+                    pass
+
+            decision_str_chat = "Recommendation not yet computed"
+            months_rem_chat = cfg["months_remaining"]
+            if months_rem_chat == 0:
+                decision_str_chat = "SWITCH NOW — Contract already ended"
+            elif best_plan_chat is not None and best_plan_chat.get("net_now", 0) > 0:
+                decision_str_chat = "SWITCH NOW — ETF is worth paying"
+            elif cfg["contract_end"]:
+                decision_str_chat = f"STAY — Switch on {cfg['contract_end'].strftime('%B %d, %Y')}"
+
+            sys_prompt_chat = _build_system_prompt(
+                cfg["plan_name"], cfg["provider"], usage_df, best_plan_chat, decision_str_chat
+            )
+            sys_prompt_chat += (
+                f"\n\nThe user is currently looking at enrolling in: {p_name} from {p_provider}. "
+                "Help them understand the enrollment process, what to watch out for, and answer "
+                "any questions about their Texas electricity plan."
+            )
+
+            for msg in st.session_state["chat_history"]:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+            user_input = st.chat_input("Ask anything about enrolling, your plan, or Texas electricity…")
+            if user_input:
+                st.session_state["chat_history"].append({"role": "user", "content": user_input})
+                with st.chat_message("user"):
+                    st.markdown(user_input)
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking…"):
+                        reply = ai_chat(st.session_state["chat_history"], sys_prompt_chat, api_key_chat)
+                    st.markdown(reply)
+                st.session_state["chat_history"].append({"role": "assistant", "content": reply})
+
+            if st.session_state["chat_history"]:
+                if st.button("🗑️ Clear chat history"):
+                    st.session_state["chat_history"] = []
+                    st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -1372,8 +1338,8 @@ def main() -> None:
     cfg = render_sidebar()
 
     # Tabs
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["📊 Dashboard", "🔍 Compare Plans", "🎯 Decision", "✅ Enroll"]
+    tab1, tab2, tab3 = st.tabs(
+        ["📊 Dashboard", "🔍 Compare Plans", "🎯 Decision"]
     )
 
     with tab1:
@@ -1384,9 +1350,6 @@ def main() -> None:
 
     with tab3:
         render_decision(cfg)
-
-    with tab4:
-        render_enroll(cfg)
 
 
 if __name__ == "__main__":
