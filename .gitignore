@@ -1,0 +1,7 @@
+electricity.db
+data/raw/
+reports/
+__pycache__/
+*.pyc
+.env
+.streamlit/secrets.toml
