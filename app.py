@@ -5,6 +5,7 @@ Streamlit web app for comparing plans, tracking usage, and managing enrollments.
 
 import io
 import math
+import re
 from datetime import date, datetime, timedelta
 
 import anthropic
@@ -36,6 +37,17 @@ def _init_state() -> None:
         "selected_plan": None,     # plan chosen in Compare tab
         "chat_history": [],        # Enroll tab chat messages
         "anthropic_api_key": "",   # optional key from sidebar
+        "efl_uploaded": False,
+        "form_provider": "",
+        "form_plan_name": "",
+        "form_zip_code": "",
+        "form_contract_start": date.today(),
+        "form_contract_term": 12,
+        "form_etf": 0.0,
+        "form_base_charge": 0.0,
+        "form_energy_charge_cents": 0.0,
+        "form_tdu_fixed": 0.0,
+        "form_tdu_variable_cents": 0.0,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -45,21 +57,8 @@ def _init_state() -> None:
 _init_state()
 
 # ---------------------------------------------------------------------------
-# Constants / defaults
+# Constants
 # ---------------------------------------------------------------------------
-
-DEFAULTS = {
-    "provider": "Green Mountain Energy",
-    "plan_name": "Pollution Free 18",
-    "zip_code": "75063",
-    "contract_start": date(2024, 12, 8),
-    "contract_term": 18,
-    "etf": 200.0,
-    "base_charge": 5.00,
-    "energy_charge_cents": 8.7991,   # ¢/kWh — displayed to user
-    "tdu_fixed": 4.23,
-    "tdu_variable_cents": 5.2974,    # ¢/kWh — displayed to user
-}
 
 PTC_URL = "http://api.powertochoose.org/api/PowerToChoose/plans?zip_code={zip_code}"
 
@@ -151,6 +150,83 @@ def parse_smt_csv(uploaded_file) -> pd.DataFrame | None:
             continue  # silently try next skiprows value
 
     return None  # all attempts failed
+
+
+# ---------------------------------------------------------------------------
+# EFL PDF parsing
+# ---------------------------------------------------------------------------
+
+def parse_efl_pdf(uploaded_file) -> dict:
+    """
+    Parse a Texas Electricity Facts Label PDF and extract rate structure.
+    Texas EFLs are standardized regulated documents — fields are always in the same format.
+    Returns a dict with session-state form keys populated, plus "_error" key on failure.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        return {"_error": "pdfplumber not installed"}
+
+    try:
+        with pdfplumber.open(uploaded_file) as pdf:
+            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+    except Exception as e:
+        return {"_error": f"Could not read PDF: {e}"}
+
+    if not text.strip():
+        return {"_error": "No text found in PDF — it may be a scanned image."}
+
+    result = {}
+
+    # Provider name — "XYZ Company (REP Cert. No. XXXXX)"
+    m = re.search(r'^(.+?)\s*\(REP Cert', text, re.MULTILINE)
+    if m:
+        result["form_provider"] = m.group(1).strip()
+
+    # Plan name — line immediately after the provider line
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    for i, line in enumerate(lines):
+        if '(REP Cert' in line and i + 1 < len(lines):
+            plan_line = lines[i + 1]
+            plan_line = re.sub(r'\bTM\b|™|®|\(TM\)', '', plan_line).strip()
+            if len(plan_line) < 60 and 'service area' not in plan_line.lower():
+                result["form_plan_name"] = plan_line
+            break
+
+    # Base charge: "Base Charge: $5.00 per billing cycle"
+    m = re.search(r'Base Charge[:\s]+\$?([\d.]+)\s+per billing cycle', text, re.IGNORECASE)
+    if m:
+        result["form_base_charge"] = float(m.group(1))
+
+    # Energy charge: "Energy Charge: 8.7991¢ per kWh"
+    m = re.search(r'Energy Charge[:\s]+([\d.]+)\s*.{0,3}\s*per kWh', text, re.IGNORECASE)
+    if m:
+        result["form_energy_charge_cents"] = float(m.group(1))
+
+    # TDU charges: "$4.23 per billing cycle and 5.2974¢ per kWh"
+    m = re.search(
+        r'Delivery Charges[:\s]+\$?([\d.]+)\s+per billing cycle and ([\d.]+)\s*.{0,3}\s*per kWh',
+        text, re.IGNORECASE,
+    )
+    if m:
+        result["form_tdu_fixed"] = float(m.group(1))
+        result["form_tdu_variable_cents"] = float(m.group(2))
+
+    # Contract term: "Contract Term  18 Months"
+    m = re.search(r'Contract Term\s+([\d]+)\s+Month', text, re.IGNORECASE)
+    if m:
+        result["form_contract_term"] = int(m.group(1))
+
+    # ETF — several possible patterns
+    m = re.search(r'Yes[.\s]*\$\s*([\d,]+)\s+Applies', text, re.IGNORECASE)
+    if not m:
+        m = re.search(r'\$([\d,]+)\s+Applies through the end of the contract', text, re.IGNORECASE)
+    if not m:
+        m = re.search(r'Cancellation Fee[:\s]+\$\s*([\d,]+)', text, re.IGNORECASE)
+    if m:
+        result["form_etf"] = float(m.group(1).replace(',', ''))
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -471,67 +547,117 @@ def ai_chat(messages: list[dict], system_prompt: str, api_key: str) -> str:
 
 def render_sidebar() -> dict:
     """
-    Render the sidebar and return a dict of current plan settings.
-    All rates are stored in $/kWh internally.
+    Render the sidebar. Returns cfg dict with current plan settings.
+    All rates stored in $/kWh internally.
     """
-    st.sidebar.header("⚡ Your Current Plan")
+    st.sidebar.header("⚡ Setup")
 
-    uploaded_file = st.sidebar.file_uploader(
-        "Upload SMT monthly CSV",
-        type=["csv"],
-        help="Download from SmartMeterTexas.com → My Account → Usage → Monthly",
-    )
+    # ── Step 1: Usage data ────────────────────────────────────────────────
+    st.sidebar.subheader("1 · Upload Usage Data")
+    st.sidebar.caption("Download from [SmartMeterTexas.com](https://www.smartmetertexas.com) → My Account → Usage → Monthly → Export CSV")
 
-    if uploaded_file is not None:
+    uploaded_csv = st.sidebar.file_uploader("SMT Monthly CSV", type=["csv"], key="csv_uploader")
+    if uploaded_csv:
         with st.spinner("Parsing CSV…"):
-            df = parse_smt_csv(uploaded_file)
+            df = parse_smt_csv(uploaded_csv)
         if df is not None:
             st.session_state["usage_df"] = df
-            st.sidebar.success(f"Loaded {len(df)} months of usage data.")
+            st.sidebar.success(f"✓ {len(df)} billing periods loaded")
         else:
-            st.sidebar.error(
-                "Could not parse this CSV. Make sure it is a Smart Meter Texas "
-                "monthly export and try again."
-            )
+            st.sidebar.error("Could not parse CSV. Make sure it is a Smart Meter Texas monthly export.")
 
+    # ── Step 2: EFL upload ────────────────────────────────────────────────
     st.sidebar.markdown("---")
-    st.sidebar.subheader("Plan Details")
+    st.sidebar.subheader("2 · Upload Your EFL")
+    st.sidebar.caption("Your Electricity Facts Label — a 1–2 page PDF from your provider. Uploading it auto-fills all rate fields below.")
 
-    provider = st.sidebar.text_input("Provider", value=DEFAULTS["provider"])
-    plan_name = st.sidebar.text_input("Plan Name", value=DEFAULTS["plan_name"])
-    zip_code = st.sidebar.text_input("ZIP Code", value=DEFAULTS["zip_code"])
+    uploaded_efl = st.sidebar.file_uploader("Electricity Facts Label (PDF)", type=["pdf"], key="efl_uploader")
+    if uploaded_efl:
+        with st.spinner("Reading EFL…"):
+            efl_data = parse_efl_pdf(uploaded_efl)
+        if "_error" in efl_data:
+            st.sidebar.warning(f"Could not auto-parse EFL ({efl_data['_error']}) — fill in the fields below manually.")
+        else:
+            for k, v in efl_data.items():
+                st.session_state[k] = v
+            st.session_state["efl_uploaded"] = True
+            st.sidebar.success("✓ EFL parsed — fields auto-filled. Enter your contract start date and ZIP below.")
+            st.rerun()
+
+    # ── Step 3: Plan details ──────────────────────────────────────────────
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("3 · Plan Details")
+    if st.session_state.get("efl_uploaded"):
+        st.sidebar.info("Fields filled from your EFL. Review and adjust if needed.")
+
+    provider = st.sidebar.text_input("Provider", value=st.session_state.get("form_provider", ""), placeholder="e.g. Green Mountain Energy")
+    st.session_state["form_provider"] = provider
+
+    plan_name = st.sidebar.text_input("Plan Name", value=st.session_state.get("form_plan_name", ""), placeholder="e.g. Pollution Free 18")
+    st.session_state["form_plan_name"] = plan_name
+
+    zip_code = st.sidebar.text_input("ZIP Code ★", value=st.session_state.get("form_zip_code", ""), placeholder="e.g. 75063", help="Required — not on the EFL, enter manually")
+    st.session_state["form_zip_code"] = zip_code
 
     contract_start = st.sidebar.date_input(
-        "Contract Start Date", value=DEFAULTS["contract_start"]
+        "Contract Start Date ★",
+        value=st.session_state.get("form_contract_start", date.today()),
+        help="Required — not on the EFL, check your welcome email or first bill",
     )
+    st.session_state["form_contract_start"] = contract_start
+
     contract_term = st.sidebar.number_input(
-        "Contract Term (months)", min_value=1, max_value=60,
-        value=DEFAULTS["contract_term"], step=1,
+        "Contract Term (months)",
+        min_value=1, max_value=60,
+        value=int(st.session_state.get("form_contract_term", 12)),
+        step=1,
     )
+    st.session_state["form_contract_term"] = int(contract_term)
+
     etf = st.sidebar.number_input(
-        "Early Termination Fee ($)", min_value=0.0,
-        value=DEFAULTS["etf"], step=10.0, format="%.2f",
+        "Early Termination Fee ($)",
+        min_value=0.0,
+        value=float(st.session_state.get("form_etf", 0.0)),
+        step=10.0, format="%.2f",
     )
+    st.session_state["form_etf"] = etf
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("Rate Details")
+    if st.session_state.get("efl_uploaded"):
+        st.sidebar.caption("Auto-filled from EFL — edit if your rates have changed.")
 
     base_charge = st.sidebar.number_input(
-        "Base / Customer Charge ($/mo)", min_value=0.0,
-        value=DEFAULTS["base_charge"], step=0.01, format="%.2f",
+        "Base / Customer Charge ($/mo)",
+        min_value=0.0,
+        value=float(st.session_state.get("form_base_charge", 0.0)),
+        step=0.01, format="%.2f",
     )
+    st.session_state["form_base_charge"] = base_charge
+
     energy_charge_cents = st.sidebar.number_input(
-        "Energy Charge (¢/kWh)", min_value=0.0,
-        value=DEFAULTS["energy_charge_cents"], step=0.0001, format="%.4f",
+        "Energy Charge (¢/kWh)",
+        min_value=0.0,
+        value=float(st.session_state.get("form_energy_charge_cents", 0.0)),
+        step=0.0001, format="%.4f",
     )
+    st.session_state["form_energy_charge_cents"] = energy_charge_cents
+
     tdu_fixed = st.sidebar.number_input(
-        "TDU Fixed Charge ($/mo)", min_value=0.0,
-        value=DEFAULTS["tdu_fixed"], step=0.01, format="%.2f",
+        "TDU Fixed Charge ($/mo)",
+        min_value=0.0,
+        value=float(st.session_state.get("form_tdu_fixed", 0.0)),
+        step=0.01, format="%.2f",
     )
+    st.session_state["form_tdu_fixed"] = tdu_fixed
+
     tdu_variable_cents = st.sidebar.number_input(
-        "TDU Variable Charge (¢/kWh)", min_value=0.0,
-        value=DEFAULTS["tdu_variable_cents"], step=0.0001, format="%.4f",
+        "TDU Variable Charge (¢/kWh)",
+        min_value=0.0,
+        value=float(st.session_state.get("form_tdu_variable_cents", 0.0)),
+        step=0.0001, format="%.4f",
     )
+    st.session_state["form_tdu_variable_cents"] = tdu_variable_cents
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("AI Settings (optional)")
@@ -539,35 +665,31 @@ def render_sidebar() -> dict:
         "Anthropic API Key",
         type="password",
         value=st.session_state.get("anthropic_api_key", ""),
-        help="Required for AI explanations. You can also set ANTHROPIC_API_KEY in .streamlit/secrets.toml",
+        help="Enables AI explanations. Get one at console.anthropic.com",
     )
     st.session_state["anthropic_api_key"] = api_key_input
 
-    # Derived values
+    # ── Derived values ────────────────────────────────────────────────────
     contract_end = contract_start + relativedelta(months=int(contract_term))
     today = date.today()
-    months_remaining = max(
-        0,
-        relativedelta(contract_end, today).months + relativedelta(contract_end, today).years * 12,
-    )
+    delta = relativedelta(contract_end, today)
+    months_remaining = max(0, delta.months + delta.years * 12)
 
     return {
-        "provider": provider,
-        "plan_name": plan_name,
-        "zip_code": zip_code,
-        "contract_start": contract_start,
-        "contract_term": int(contract_term),
-        "contract_end": contract_end,
-        "months_remaining": months_remaining,
-        "etf": etf,
-        "base_charge": base_charge,
-        # Store rates in $/kWh internally
-        "energy_rate": energy_charge_cents / 100.0,
-        "tdu_fixed": tdu_fixed,
-        "tdu_rate": tdu_variable_cents / 100.0,
-        # Keep ¢/kWh versions for display
+        "provider":            provider,
+        "plan_name":           plan_name,
+        "zip_code":            zip_code,
+        "contract_start":      contract_start,
+        "contract_term":       int(contract_term),
+        "contract_end":        contract_end,
+        "months_remaining":    months_remaining,
+        "etf":                 etf,
+        "base_charge":         base_charge,
+        "energy_rate":         energy_charge_cents / 100.0,
+        "tdu_fixed":           tdu_fixed,
+        "tdu_rate":            tdu_variable_cents / 100.0,
         "energy_charge_cents": energy_charge_cents,
-        "tdu_variable_cents": tdu_variable_cents,
+        "tdu_variable_cents":  tdu_variable_cents,
     }
 
 
@@ -582,26 +704,26 @@ def render_dashboard(cfg: dict) -> None:
     usage_df: pd.DataFrame | None = st.session_state.get("usage_df")
 
     if usage_df is None:
-        # Welcome / no-data state
-        st.info("Upload your Smart Meter Texas CSV in the sidebar to get started.")
-        st.markdown(
-            """
-            ### Getting started — 3 steps
-
-            **Step 1 — Download your usage data**
-            Log in at [SmartMeterTexas.com](https://www.smartmetertexas.com) →
-            *My Account* → *Usage* → *Monthly* → Export CSV.
-
-            **Step 2 — Fill in your plan details**
-            Use the sidebar to enter your current provider, plan name, contract dates, and rate details.
-            The form is pre-filled with common Green Mountain Energy values — adjust as needed.
-
-            **Step 3 — Explore the tabs**
-            - **Compare Plans** — fetch live plans from PowerToChoose and see how you stack up
-            - **Decision** — get a STAY / SWITCH recommendation based on your actual usage
-            - **Enroll** — step-by-step guidance and an AI chat assistant
-            """
-        )
+        st.markdown("## Welcome to your Texas Electricity Manager")
+        st.markdown("Get a clear picture of what you're paying, find better plans, and know exactly when to switch.")
+        st.markdown("---")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("### Step 1 — Upload your usage data")
+            st.markdown(
+                "Log in at **[SmartMeterTexas.com](https://www.smartmetertexas.com)**  \n"
+                "→ My Account → Usage → Monthly → Export CSV  \n\n"
+                "Then upload the file in the sidebar on the left."
+            )
+        with c2:
+            st.markdown("### Step 2 — Upload your EFL")
+            st.markdown(
+                "Your **Electricity Facts Label** is a 1–2 page PDF from your provider.  \n"
+                "It's in your welcome email, your provider's website, or on your bill.  \n\n"
+                "Upload it in the sidebar and all your rate details fill in automatically."
+            )
+        st.markdown("---")
+        st.info("★ Two fields you'll need to enter manually regardless: your **ZIP code** and **contract start date** (check your first bill or welcome email).")
         return
 
     # --- Key metrics ---
@@ -681,7 +803,8 @@ def render_compare(cfg: dict) -> None:
     col_fetch, col_filters = st.columns([2, 3])
 
     with col_fetch:
-        if st.button("🔄 Fetch Plans from PowerToChoose", type="primary"):
+        if st.button("🔄 Refresh Plans from PowerToChoose", type="primary"):
+            st.cache_data.clear()
             with st.spinner("Fetching plans…"):
                 raw = fetch_plans(cfg["zip_code"])
             if raw is not None:
@@ -695,10 +818,19 @@ def render_compare(cfg: dict) -> None:
         allow_credit = st.checkbox("Include bill-credit plans", value=False)
 
     plans_df: pd.DataFrame | None = st.session_state.get("plans_df")
+
+    # Auto-fetch if zip code is set and plans not yet loaded
+    if plans_df is None and cfg.get("zip_code"):
+        with st.spinner("Loading plans from PowerToChoose…"):
+            raw = fetch_plans(cfg["zip_code"])
+        if raw is not None:
+            st.session_state["plans_df"] = raw
+            plans_df = raw
+
     usage_df: pd.DataFrame | None = st.session_state.get("usage_df")
 
     if plans_df is None:
-        st.info("Click **Fetch Plans** to load available electricity plans for ZIP " + cfg["zip_code"])
+        st.info("Click **Refresh Plans** to load available electricity plans for ZIP " + cfg["zip_code"])
         return
 
     # Filter plans
@@ -802,6 +934,64 @@ def render_compare(cfg: dict) -> None:
 
         st.divider()
 
+    # ── Multi-plan side-by-side comparison ───────────────────────────────
+    st.markdown("---")
+    st.subheader("Side-by-Side Comparison")
+    st.caption("Select 2–5 plans to compare in detail.")
+
+    all_labels = [
+        f"{row.get('company_name', '')} — {row.get('plan_name', '')}"
+        for _, row in filtered.iterrows()
+    ]
+    chosen = st.multiselect("Pick plans to compare", all_labels, max_selections=5, key="compare_multiselect")
+
+    if len(chosen) >= 2:
+        chosen_rows = [filtered.iloc[all_labels.index(c)] for c in chosen]
+
+        # Grouped bar chart: rates at 500 / 1000 / 2000 kWh
+        bar_data = []
+        for row in chosen_rows:
+            name = f"{row.get('company_name', '')} — {row.get('plan_name', '')}"
+            for usage, col in [(500, "price_kwh500"), (1000, "price_kwh1000"), (2000, "price_kwh2000")]:
+                bar_data.append({"Plan": name, "Usage Level": f"{usage} kWh", "¢/kWh": float(row.get(col, 0))})
+
+        fig_bar = px.bar(
+            pd.DataFrame(bar_data),
+            x="Usage Level", y="¢/kWh", color="Plan",
+            barmode="group",
+            title="All-In Rate (¢/kWh) at Each Usage Level",
+        )
+        fig_bar.update_layout(
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        # Comparison table
+        compare_rows = []
+        for row in chosen_rows:
+            compare_rows.append({
+                "Provider": row.get("company_name", ""),
+                "Plan": row.get("plan_name", ""),
+                "Term": f"{int(row.get('term_value', 0))} mo",
+                "¢/kWh @ 500 kWh":  f"{float(row.get('price_kwh500', 0)):.1f}",
+                "¢/kWh @ 1000 kWh": f"{float(row.get('price_kwh1000', 0)):.1f}",
+                "¢/kWh @ 2000 kWh": f"{float(row.get('price_kwh2000', 0)):.1f}",
+                "12-mo Savings ($)": f"${row.get('post_contract_savings', 0):,.0f}" if "post_contract_savings" in row else "—",
+                "Switch-Now Net ($)": f"${row.get('net_now', 0):,.0f}" if "net_now" in row else "—",
+            })
+        st.dataframe(pd.DataFrame(compare_rows), use_container_width=True, hide_index=True)
+
+        # EFL + enroll links
+        for row in chosen_rows:
+            name = f"{row.get('company_name', '')} — {row.get('plan_name', '')}"
+            c1, c2, c3 = st.columns([4, 1, 1])
+            c1.markdown(f"**{name}**")
+            if row.get("fact_sheet"):
+                c2.link_button("EFL", row["fact_sheet"])
+            if row.get("go_to_plan"):
+                c3.link_button("Enroll →", row["go_to_plan"])
+
 
 # ---------------------------------------------------------------------------
 # Tab 3: Decision
@@ -813,6 +1003,14 @@ def render_decision(cfg: dict) -> None:
 
     usage_df: pd.DataFrame | None = st.session_state.get("usage_df")
     plans_df: pd.DataFrame | None = st.session_state.get("plans_df")
+
+    # Auto-fetch if zip code is set and plans not yet loaded
+    if plans_df is None and cfg.get("zip_code"):
+        with st.spinner("Loading plans from PowerToChoose…"):
+            raw = fetch_plans(cfg["zip_code"])
+        if raw is not None:
+            st.session_state["plans_df"] = raw
+            plans_df = raw
 
     if usage_df is None:
         st.warning("Upload usage data in the sidebar to see a personalised recommendation.")

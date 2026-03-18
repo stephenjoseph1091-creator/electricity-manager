@@ -3,3 +3,4 @@ streamlit>=1.30.0
 anthropic>=0.20.0
 plotly>=5.0.0
 python-dateutil>=2.8.0
+pdfplumber>=0.10.0
