@@ -217,6 +217,14 @@ def parse_efl_pdf(uploaded_file) -> dict:
     if m:
         result["form_contract_term"] = int(m.group(1))
 
+    # Contract start date: "Date:12/08/2024" in the EFL header
+    m = re.search(r'\bDate[:\s]+([\d]{1,2}/[\d]{1,2}/[\d]{4})', text, re.IGNORECASE)
+    if m:
+        try:
+            result["form_contract_start"] = datetime.strptime(m.group(1), "%m/%d/%Y").date()
+        except ValueError:
+            pass
+
     # ETF — several possible patterns
     m = re.search(r'Yes[.\s]*\$\s*([\d,]+)\s+Applies', text, re.IGNORECASE)
     if not m:
