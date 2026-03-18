@@ -1,0 +1,33 @@
+name: Weekly Plan Monitor
+
+on:
+  schedule:
+    # Every Monday at 9:00 AM Central (14:00 UTC)
+    - cron: "0 14 * * 1"
+  workflow_dispatch:   # allows manual trigger from GitHub Actions tab
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install supabase resend python-dateutil pandas
+
+      - name: Run monitor
+        env:
+          SUPABASE_URL:   ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:   ${{ secrets.SUPABASE_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          FROM_EMAIL:     ${{ secrets.FROM_EMAIL }}
+        run: python3 scripts/monitor.py

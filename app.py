@@ -67,6 +67,48 @@ def _get_api_key() -> str | None:
     return key if key else None
 
 
+def _get_supabase_client():
+    """Return a Supabase client if credentials are configured, else None."""
+    try:
+        from supabase import create_client
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+def _save_profile(email: str, efl: dict, zip_code: str) -> tuple[bool, str]:
+    """Upsert a user profile into Supabase. Returns (success, message)."""
+    client = _get_supabase_client()
+    if client is None:
+        return False, "Supabase not configured — notifications unavailable."
+
+    contract_start = efl.get("form_contract_start")
+    row = {
+        "email":                 email.strip().lower(),
+        "zip_code":              zip_code.strip(),
+        "provider":              efl.get("form_provider", ""),
+        "plan_name":             efl.get("form_plan_name", ""),
+        "contract_start":        contract_start.isoformat() if contract_start else None,
+        "contract_term_months":  int(efl.get("form_contract_term", 12)),
+        "etf_dollars":           float(efl.get("form_etf", 0)),
+        "base_charge":           float(efl.get("form_base_charge", 0)),
+        "energy_rate":           float(efl.get("form_energy_charge_cents", 0)) / 100.0,
+        "tdu_fixed":             float(efl.get("form_tdu_fixed", 0)),
+        "tdu_rate":              float(efl.get("form_tdu_variable_cents", 0)) / 100.0,
+        # Reset alert flags whenever the profile is saved/updated
+        "alert_60_sent":         False,
+        "alert_30_sent":         False,
+        "alert_14_sent":         False,
+    }
+    try:
+        client.table("user_profiles").upsert(row, on_conflict="email").execute()
+        return True, f"Profile saved! You'll receive alerts at **{email}**."
+    except Exception as exc:
+        return False, f"Could not save profile: {exc}"
+
+
 # ---------------------------------------------------------------------------
 # CSV parsing
 # ---------------------------------------------------------------------------
@@ -643,6 +685,35 @@ def render_sidebar() -> dict:
         help="Enables AI explanations. Get one at console.anthropic.com",
     )
     st.session_state["anthropic_api_key"] = api_key_input
+
+    # ── Notification profile ───────────────────────────────────────────────
+    efl_ready = bool(st.session_state.get("efl_data"))
+    if efl_ready:
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("📬 Email Notifications")
+        st.sidebar.caption(
+            "Get emailed 60, 30, and 14 days before your contract ends — "
+            "and whenever a significantly better plan appears."
+        )
+        notif_email = st.sidebar.text_input(
+            "Your email address",
+            placeholder="you@example.com",
+            key="notif_email",
+        )
+        if st.sidebar.button(
+            "Save for Notifications",
+            disabled=not notif_email,
+            help="Saves your plan details so the monitor can watch rates on your behalf.",
+        ):
+            ok, msg = _save_profile(
+                notif_email,
+                st.session_state["efl_data"],
+                st.session_state.get("zip_code", ""),
+            )
+            if ok:
+                st.sidebar.success(msg)
+            else:
+                st.sidebar.error(msg)
 
     # ── Build cfg from parsed EFL ─────────────────────────────────────────
     efl             = st.session_state.get("efl_data", {})
