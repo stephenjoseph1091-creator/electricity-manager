@@ -950,11 +950,11 @@ def render_decision(cfg: dict) -> None:
             "Provider": p.get("company_name", ""),
             "Plan": p.get("plan_name", ""),
             "Term": f"{int(p.get('term_value', 0))} mo",
-            "¢ @ 500": f"{float(p.get('price_kwh500', 0)):.1f}",
-            "¢ @ 1000": f"{float(p.get('price_kwh1000', 0)):.1f}",
-            "¢ @ 2000": f"{float(p.get('price_kwh2000', 0)):.1f}",
-            "12-mo Savings": f"${p.get('post_contract_savings', 0):,.0f}",
-            "Switch-Now Net": f"${p.get('net_now', 0):,.0f}",
+            "¢/kWh @ 500 kWh": f"{float(p.get('price_kwh500', 0)):.1f}",
+            "¢/kWh @ 1000 kWh": f"{float(p.get('price_kwh1000', 0)):.1f}",
+            "¢/kWh @ 2000 kWh": f"{float(p.get('price_kwh2000', 0)):.1f}",
+            "12-mo Savings ($)": f"${p.get('post_contract_savings', 0):,.0f}",
+            "Switch-Now Net ($)": f"${p.get('net_now', 0):,.0f}",
         })
 
     st.dataframe(
