@@ -37,17 +37,8 @@ def _init_state() -> None:
         "selected_plan": None,     # plan chosen in Compare tab
         "chat_history": [],        # Enroll tab chat messages
         "anthropic_api_key": "",   # optional key from sidebar
-        "efl_uploaded": False,
-        "form_provider": "",
-        "form_plan_name": "",
-        "form_zip_code": "",
-        "form_contract_start": date.today(),
-        "form_contract_term": 12,
-        "form_etf": 0.0,
-        "form_base_charge": 0.0,
-        "form_energy_charge_cents": 0.0,
-        "form_tdu_fixed": 0.0,
-        "form_tdu_variable_cents": 0.0,
+        "efl_data": {},            # parsed EFL values
+        "zip_code": "",            # entered by user
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -555,143 +546,129 @@ def ai_chat(messages: list[dict], system_prompt: str, api_key: str) -> str:
 
 def render_sidebar() -> dict:
     """
-    Render the sidebar. Returns cfg dict with current plan settings.
-    All rates stored in $/kWh internally.
+    Render the sidebar. Three inputs only: CSV, EFL PDF, ZIP code.
+    Everything else is parsed automatically. Returns cfg dict.
     """
     st.sidebar.header("⚡ Setup")
 
-    # ── Step 1: Usage data ────────────────────────────────────────────────
-    st.sidebar.subheader("1 · Upload Usage Data")
-    st.sidebar.caption("Download from [SmartMeterTexas.com](https://www.smartmetertexas.com) → My Account → Usage → Monthly → Export CSV")
-
-    uploaded_csv = st.sidebar.file_uploader("SMT Monthly CSV", type=["csv"], key="csv_uploader")
-    if uploaded_csv:
-        with st.spinner("Parsing CSV…"):
-            df = parse_smt_csv(uploaded_csv)
-        if df is not None:
-            st.session_state["usage_df"] = df
-            st.sidebar.success(f"✓ {len(df)} billing periods loaded")
-        else:
-            st.sidebar.error("Could not parse CSV. Make sure it is a Smart Meter Texas monthly export.")
-
-    # ── Step 2: EFL upload ────────────────────────────────────────────────
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("2 · Upload Your EFL")
-    st.sidebar.caption("Your Electricity Facts Label — a 1–2 page PDF from your provider. Uploading it auto-fills all rate fields below.")
-
-    uploaded_efl = st.sidebar.file_uploader("Electricity Facts Label (PDF)", type=["pdf"], key="efl_uploader")
-    if uploaded_efl:
-        with st.spinner("Reading EFL…"):
-            efl_data = parse_efl_pdf(uploaded_efl)
-        if "_error" in efl_data:
-            st.sidebar.warning(f"Could not auto-parse EFL ({efl_data['_error']}) — fill in the fields below manually.")
-        else:
-            for k, v in efl_data.items():
-                st.session_state[k] = v
-            st.session_state["efl_uploaded"] = True
-            st.sidebar.success("✓ EFL parsed — fields auto-filled. Enter your contract start date and ZIP below.")
-            st.rerun()
-
-    # ── Step 3: Plan details ──────────────────────────────────────────────
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("3 · Plan Details")
-    if st.session_state.get("efl_uploaded"):
-        st.sidebar.info("Fields filled from your EFL. Review and adjust if needed.")
-
-    provider = st.sidebar.text_input("Provider", value=st.session_state.get("form_provider", ""), placeholder="e.g. Green Mountain Energy")
-    st.session_state["form_provider"] = provider
-
-    plan_name = st.sidebar.text_input("Plan Name", value=st.session_state.get("form_plan_name", ""), placeholder="e.g. Pollution Free 18")
-    st.session_state["form_plan_name"] = plan_name
-
-    zip_code = st.sidebar.text_input("ZIP Code ★", value=st.session_state.get("form_zip_code", ""), placeholder="e.g. 75063", help="Required — not on the EFL, enter manually")
-    st.session_state["form_zip_code"] = zip_code
-
-    contract_start = st.sidebar.date_input(
-        "Contract Start Date ★",
-        value=st.session_state.get("form_contract_start", date.today()),
-        help="Required — not on the EFL, check your welcome email or first bill",
+    uploaded_csv = st.sidebar.file_uploader(
+        "1 · Smart Meter Texas CSV",
+        type=["csv"], key="csv_uploader",
+        help="Download from SmartMeterTexas.com → My Account → Usage → Monthly → Export CSV",
     )
-    st.session_state["form_contract_start"] = contract_start
 
-    contract_term = st.sidebar.number_input(
-        "Contract Term (months)",
-        min_value=1, max_value=60,
-        value=int(st.session_state.get("form_contract_term", 12)),
-        step=1,
+    uploaded_efl = st.sidebar.file_uploader(
+        "2 · Electricity Facts Label (PDF)",
+        type=["pdf"], key="efl_uploader",
+        help="The 1–2 page PDF from your provider — in your welcome email or provider website",
     )
-    st.session_state["form_contract_term"] = int(contract_term)
 
-    etf = st.sidebar.number_input(
-        "Early Termination Fee ($)",
-        min_value=0.0,
-        value=float(st.session_state.get("form_etf", 0.0)),
-        step=10.0, format="%.2f",
+    zip_code = st.sidebar.text_input(
+        "3 · Your ZIP code",
+        value=st.session_state.get("zip_code", ""),
+        placeholder="e.g. 75063",
     )
-    st.session_state["form_etf"] = etf
 
     st.sidebar.markdown("---")
-    st.sidebar.subheader("Rate Details")
-    if st.session_state.get("efl_uploaded"):
-        st.sidebar.caption("Auto-filled from EFL — edit if your rates have changed.")
 
-    base_charge = st.sidebar.number_input(
-        "Base / Customer Charge ($/mo)",
-        min_value=0.0,
-        value=float(st.session_state.get("form_base_charge", 0.0)),
-        step=0.01, format="%.2f",
-    )
-    st.session_state["form_base_charge"] = base_charge
+    if st.sidebar.button("Analyze My Plan →", type="primary",
+                         disabled=(uploaded_csv is None and uploaded_efl is None)):
+        # Parse CSV
+        if uploaded_csv is not None:
+            with st.spinner("Reading usage data…"):
+                df = parse_smt_csv(uploaded_csv)
+            if df is not None:
+                st.session_state["usage_df"] = df
+            else:
+                st.sidebar.error("Could not parse CSV — make sure it's a Smart Meter Texas monthly export.")
 
-    energy_charge_cents = st.sidebar.number_input(
-        "Energy Charge (¢/kWh)",
-        min_value=0.0,
-        value=float(st.session_state.get("form_energy_charge_cents", 0.0)),
-        step=0.0001, format="%.4f",
-    )
-    st.session_state["form_energy_charge_cents"] = energy_charge_cents
+        # Parse EFL
+        if uploaded_efl is not None:
+            with st.spinner("Reading EFL…"):
+                efl_result = parse_efl_pdf(uploaded_efl)
+            if "_error" in efl_result:
+                st.sidebar.error(f"Could not read EFL: {efl_result['_error']}")
+            else:
+                st.session_state["efl_data"] = efl_result
 
-    tdu_fixed = st.sidebar.number_input(
-        "TDU Fixed Charge ($/mo)",
-        min_value=0.0,
-        value=float(st.session_state.get("form_tdu_fixed", 0.0)),
-        step=0.01, format="%.2f",
-    )
-    st.session_state["form_tdu_fixed"] = tdu_fixed
+        # Save ZIP
+        st.session_state["zip_code"] = zip_code
 
-    tdu_variable_cents = st.sidebar.number_input(
-        "TDU Variable Charge (¢/kWh)",
-        min_value=0.0,
-        value=float(st.session_state.get("form_tdu_variable_cents", 0.0)),
-        step=0.0001, format="%.4f",
-    )
-    st.session_state["form_tdu_variable_cents"] = tdu_variable_cents
+        st.rerun()
 
+    # ── Display parsed plan info (read-only) ──────────────────────────────
+    efl = st.session_state.get("efl_data", {})
+    usage_df = st.session_state.get("usage_df")
+
+    if efl or usage_df is not None:
+        st.sidebar.markdown("---")
+
+    if usage_df is not None:
+        st.sidebar.success(f"✓ Usage data: {len(usage_df)} billing periods")
+
+    if efl:
+        provider    = efl.get("form_provider", "")
+        plan_name   = efl.get("form_plan_name", "")
+        term        = int(efl.get("form_contract_term", 0))
+        etf_val     = float(efl.get("form_etf", 0))
+        base        = float(efl.get("form_base_charge", 0))
+        energy_c    = float(efl.get("form_energy_charge_cents", 0))
+        tdu_fix     = float(efl.get("form_tdu_fixed", 0))
+        tdu_var_c   = float(efl.get("form_tdu_variable_cents", 0))
+        c_start     = efl.get("form_contract_start")
+
+        c_end_str = ""
+        if c_start and term:
+            c_end = c_start + relativedelta(months=term)
+            c_end_str = f" → {c_end.strftime('%b %d, %Y')}"
+
+        total_rate = energy_c + tdu_var_c
+        fixed_mo   = base + tdu_fix
+
+        st.sidebar.success("✓ EFL parsed")
+        st.sidebar.markdown(
+            f"**{provider}**  \n"
+            f"{plan_name}  \n"
+            f"{'Contract: ' + c_start.strftime('%b %d, %Y') + c_end_str if c_start else ''}  \n"
+            f"ETF: **${etf_val:.0f}**  \n"
+            f"Rate: **{total_rate:.2f}¢/kWh** + **${fixed_mo:.2f}/mo** fixed"
+        )
+
+    # ── AI key ────────────────────────────────────────────────────────────
     st.sidebar.markdown("---")
-    st.sidebar.subheader("AI Settings (optional)")
     api_key_input = st.sidebar.text_input(
-        "Anthropic API Key",
+        "Anthropic API Key (optional)",
         type="password",
         value=st.session_state.get("anthropic_api_key", ""),
         help="Enables AI explanations. Get one at console.anthropic.com",
     )
     st.session_state["anthropic_api_key"] = api_key_input
 
-    # ── Derived values ────────────────────────────────────────────────────
-    contract_end = contract_start + relativedelta(months=int(contract_term))
-    today = date.today()
-    delta = relativedelta(contract_end, today)
+    # ── Build cfg from parsed EFL ─────────────────────────────────────────
+    efl             = st.session_state.get("efl_data", {})
+    zip_code_stored = st.session_state.get("zip_code", zip_code)
+
+    contract_start  = efl.get("form_contract_start", date.today())
+    contract_term   = int(efl.get("form_contract_term", 12))
+    contract_end    = contract_start + relativedelta(months=contract_term)
+    today           = date.today()
+    delta           = relativedelta(contract_end, today)
     months_remaining = max(0, delta.months + delta.years * 12)
 
+    base_charge          = float(efl.get("form_base_charge", 0.0))
+    energy_charge_cents  = float(efl.get("form_energy_charge_cents", 0.0))
+    tdu_fixed            = float(efl.get("form_tdu_fixed", 0.0))
+    tdu_variable_cents   = float(efl.get("form_tdu_variable_cents", 0.0))
+
     return {
-        "provider":            provider,
-        "plan_name":           plan_name,
-        "zip_code":            zip_code,
+        "provider":            efl.get("form_provider", ""),
+        "plan_name":           efl.get("form_plan_name", ""),
+        "zip_code":            zip_code_stored,
         "contract_start":      contract_start,
-        "contract_term":       int(contract_term),
+        "contract_term":       contract_term,
         "contract_end":        contract_end,
         "months_remaining":    months_remaining,
-        "etf":                 etf,
+        "etf":                 float(efl.get("form_etf", 0.0)),
         "base_charge":         base_charge,
         "energy_rate":         energy_charge_cents / 100.0,
         "tdu_fixed":           tdu_fixed,
