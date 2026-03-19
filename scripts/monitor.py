@@ -237,6 +237,7 @@ def build_email_html(profile: dict, trigger: str, days_remaining: int,
           Savings are estimated vs continuing on your current plan for 12 months after contract end,
           using typical Texas seasonal usage patterns. Always read the EFL before enrolling.<br><br>
           You're receiving this because you signed up at the Texas Electricity Plan Manager.
+          To stop receiving alerts, open the app and click <strong>Remove me from notifications</strong> in the sidebar.
         </p>
       </div>
     </div>

@@ -106,6 +106,69 @@ def _save_profile(email: str, efl: dict, zip_code: str) -> tuple[bool, str]:
         return False, f"Could not save profile: {exc}"
 
 
+def _remove_profile(email: str) -> tuple[bool, str]:
+    """Delete a user profile from Supabase. Returns (success, message)."""
+    client = _get_supabase_client()
+    if client is None:
+        return False, "Supabase not configured."
+    try:
+        client.table("user_profiles").delete().eq("email", email.strip().lower()).execute()
+        return True, f"**{email}** removed. You won't receive any more alerts."
+    except Exception as exc:
+        return False, f"Could not remove profile: {exc}"
+
+
+def _send_test_email(email: str, cfg: dict) -> tuple[bool, str]:
+    """Send a sample alert email so the user can preview the format."""
+    try:
+        import resend as _resend
+        _resend.api_key = st.secrets["RESEND_API_KEY"]
+        from_email = st.secrets.get("FROM_EMAIL", "onboarding@resend.dev")
+    except Exception:
+        return False, "Resend not configured in secrets."
+
+    provider  = cfg.get("provider", "Your Provider")
+    plan_name = cfg.get("plan_name", "your current plan")
+    end_date  = cfg.get("contract_end")
+    end_str   = end_date.strftime("%B %d, %Y") if end_date else "N/A"
+
+    html = f"""
+    <div style="font-family:sans-serif;max-width:640px;margin:0 auto;color:#222">
+      <div style="background:#00A651;padding:20px 24px;border-radius:8px 8px 0 0">
+        <h1 style="margin:0;color:#fff;font-size:22px">⚡ Texas Electricity Plan Monitor</h1>
+      </div>
+      <div style="background:#f9f9f9;padding:24px;border-radius:0 0 8px 8px;border:1px solid #e0e0e0">
+        <p style="font-size:16px"><strong>This is a test email</strong> — your notifications are working correctly.</p>
+        <p>When a real alert fires, it will look like this but with live plan data and savings estimates.</p>
+        <hr style="border:none;border-top:1px solid #e0e0e0;margin:20px 0">
+        <p><strong>Your current plan on file:</strong><br>
+        {provider} — {plan_name}<br>
+        Contract ends: {end_str}</p>
+        <p><strong>You'll be alerted when:</strong></p>
+        <ul>
+          <li>Your contract ends in 60, 30, or 14 days</li>
+          <li>Your contract has expired</li>
+          <li>A plan appears that would save you $150+ over 12 months</li>
+        </ul>
+        <hr style="border:none;border-top:1px solid #e0e0e0;margin:20px 0">
+        <p style="font-size:12px;color:#888">
+          To stop receiving alerts, open the app and click <strong>Remove me from notifications</strong> in the sidebar.
+        </p>
+      </div>
+    </div>
+    """
+    try:
+        _resend.Emails.send({
+            "from":    from_email,
+            "to":      [email.strip()],
+            "subject": "⚡ Test — Texas Electricity Plan Monitor is set up",
+            "html":    html,
+        })
+        return True, f"Test email sent to **{email}**. Check your inbox."
+    except Exception as exc:
+        return False, f"Could not send email: {exc}"
+
+
 # ---------------------------------------------------------------------------
 # CSV parsing
 # ---------------------------------------------------------------------------
@@ -701,6 +764,31 @@ def render_sidebar() -> dict:
                 st.sidebar.success(msg)
             else:
                 st.sidebar.error(msg)
+
+        if notif_email:
+            col_test, col_remove = st.sidebar.columns(2)
+            if col_test.button("Send test email", disabled=not notif_email):
+                # cfg isn't built yet at this point, build a minimal version
+                _efl = st.session_state.get("efl_data", {})
+                _cs  = _efl.get("form_contract_start", date.today())
+                _ct  = int(_efl.get("form_contract_term", 12))
+                _mini_cfg = {
+                    "provider":     _efl.get("form_provider", ""),
+                    "plan_name":    _efl.get("form_plan_name", ""),
+                    "contract_end": _cs + relativedelta(months=_ct),
+                }
+                ok, msg = _send_test_email(notif_email, _mini_cfg)
+                if ok:
+                    st.sidebar.success(msg)
+                else:
+                    st.sidebar.error(msg)
+
+            if col_remove.button("Remove me", help="Stop receiving email alerts"):
+                ok, msg = _remove_profile(notif_email)
+                if ok:
+                    st.sidebar.success(msg)
+                else:
+                    st.sidebar.error(msg)
 
     # ── Build cfg from parsed EFL ─────────────────────────────────────────
     efl             = st.session_state.get("efl_data", {})
