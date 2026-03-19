@@ -704,12 +704,12 @@ def render_sidebar() -> dict:
             value=st.session_state.get("contract_start_override", None),
             min_value=date(2020, 1, 1),
             max_value=date.today(),
+            format="MM/DD/YYYY",
             help="If your provider's portal shows a different contract end date, enter your actual service start date here to override the estimate.",
         )
         submitted = st.form_submit_button(
             "Analyze My Plan →",
             type="primary",
-            disabled=(uploaded_csv is None and uploaded_efl is None),
         )
 
     if submitted:
