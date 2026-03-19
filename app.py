@@ -845,56 +845,78 @@ def render_sidebar() -> dict:
 
 def render_dashboard(cfg: dict) -> None:
     """Render the Dashboard tab."""
-    st.header("Dashboard")
 
     usage_df: pd.DataFrame | None = st.session_state.get("usage_df")
 
     if usage_df is None:
         st.markdown("## Welcome to your Texas Electricity Manager")
-        st.markdown("Get a clear picture of what you're paying, find better plans, and know exactly when to switch.")
-        st.markdown("---")
-        c1, c2 = st.columns(2)
+        st.caption("See exactly what you're paying, find better plans, and never let your contract expire unnoticed.")
+        st.markdown("")
+
+        c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown("### Step 1 — Upload your usage data")
+            st.markdown("#### 1 · Upload your usage CSV")
             st.markdown(
                 "Log in at **[SmartMeterTexas.com](https://www.smartmetertexas.com)**  \n"
-                "→ My Account → Usage → Monthly → Export CSV  \n\n"
-                "Then upload the file in the sidebar on the left."
+                "My Account → Usage → Monthly → Export CSV"
             )
         with c2:
-            st.markdown("### Step 2 — Upload your EFL")
+            st.markdown("#### 2 · Upload your EFL")
             st.markdown(
-                "Your **Electricity Facts Label** is a 1–2 page PDF from your provider.  \n"
-                "It's in your welcome email, your provider's website, or on your bill.  \n\n"
-                "Upload it in the sidebar and all your rate details fill in automatically."
+                "Your **Electricity Facts Label** PDF — in your welcome email or on your provider's website."
             )
-        st.markdown("---")
-        st.info("★ Two fields you'll need to enter manually regardless: your **ZIP code** and **contract start date** (check your first bill or welcome email).")
+        with c3:
+            st.markdown("#### 3 · Enter ZIP + email")
+            st.markdown(
+                "Your ZIP pulls live plan rates. Your email signs you up for automatic renewal alerts."
+            )
+
+        st.markdown("")
+        st.info("📱 On mobile? Tap the **arrow in the top-left corner** to open the sidebar and get started.")
         return
 
-    # --- Key metrics ---
-    avg_kwh = usage_df["kwh"].mean()
-    avg_bill = avg_kwh * (cfg["energy_rate"] + cfg["tdu_rate"]) + cfg["base_charge"] + cfg["tdu_fixed"]
-    est_annual = avg_bill * 12
+    # --- Contract countdown banner ---
+    contract_end  = cfg.get("contract_end")
+    months_rem    = cfg.get("months_remaining", 0)
+    if contract_end:
+        days_rem = (contract_end - date.today()).days
+        if days_rem < 0:
+            st.error(f"⚠️ Your contract expired {abs(days_rem)} days ago. You're on month-to-month — switch now.")
+        elif days_rem <= 30:
+            st.warning(f"⏰ Your contract ends in **{days_rem} days** ({contract_end.strftime('%B %d, %Y')}). Time to pick a new plan.")
+        elif days_rem <= 60:
+            st.warning(f"📅 Your contract ends in **{days_rem} days** ({contract_end.strftime('%B %d, %Y')}). Start comparing plans.")
+        else:
+            st.success(f"✓ Contract runs until **{contract_end.strftime('%B %d, %Y')}** ({months_rem} months remaining)")
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Months of Data", len(usage_df))
-    col2.metric("Avg Monthly Usage", f"{avg_kwh:.0f} kWh")
-    col3.metric("Avg Est. Monthly Bill", f"${avg_bill:.2f}")
-    col4.metric("Est. Annual Cost", f"${est_annual:.2f}")
+    st.markdown("")
+
+    # --- Key metrics (2x2 for mobile friendliness) ---
+    avg_kwh  = usage_df["kwh"].mean()
+    avg_bill = avg_kwh * (cfg["energy_rate"] + cfg["tdu_rate"]) + cfg["base_charge"] + cfg["tdu_fixed"]
+
+    r1, r2 = st.columns(2)
+    r1.metric("Avg Monthly Usage", f"{avg_kwh:.0f} kWh")
+    r2.metric("Avg Est. Monthly Bill", f"${avg_bill:.2f}")
+    r3, r4 = st.columns(2)
+    r3.metric("Est. Annual Cost", f"${avg_bill * 12:.0f}")
+    r4.metric("Months of Data", len(usage_df))
 
     st.markdown("---")
 
-    # --- Usage bar chart ---
-    st.subheader("Monthly Usage (kWh)")
+    # --- Monthly usage chart (aggregated to one bar per month) ---
+    st.subheader("Monthly Usage")
     chart_df = usage_df.copy()
-    chart_df["month"] = chart_df["date"].dt.strftime("%b %Y")
+    chart_df["period"] = pd.to_datetime(chart_df["date"]).dt.to_period("M")
+    chart_df = chart_df.groupby("period", as_index=False)["kwh"].sum()
+    chart_df = chart_df.sort_values("period")
+    chart_df["month"] = chart_df["period"].dt.strftime("%b %Y")
 
     fig = px.bar(
         chart_df,
         x="month",
         y="kwh",
-        labels={"month": "Month", "kwh": "Usage (kWh)"},
+        labels={"month": "", "kwh": "kWh"},
         color="kwh",
         color_continuous_scale=["#c8f5d8", "#00A651"],
         text_auto=".0f",
@@ -903,37 +925,42 @@ def render_dashboard(cfg: dict) -> None:
         coloraxis_showscale=False,
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(tickangle=-45),
-        margin=dict(t=30, b=60),
+        xaxis=dict(tickangle=-45, tickfont=dict(size=11)),
+        margin=dict(t=20, b=40, l=20, r=20),
+        height=320,
     )
-    fig.update_traces(textposition="outside")
+    fig.update_traces(textposition="outside", textfont=dict(size=11))
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
 
-    # --- Monthly bill breakdown ---
+    # --- Estimated monthly bill chart ---
     st.subheader("Estimated Monthly Bills")
     bill_df = usage_df.copy()
+    bill_df["period"] = pd.to_datetime(bill_df["date"]).dt.to_period("M")
+    bill_df = bill_df.groupby("period", as_index=False)["kwh"].sum()
+    bill_df = bill_df.sort_values("period")
+    bill_df["month"]    = bill_df["period"].dt.strftime("%b %Y")
     bill_df["est_bill"] = bill_df["kwh"].apply(
         lambda k: current_plan_cost(k, cfg["base_charge"], cfg["energy_rate"],
-                                     cfg["tdu_fixed"], cfg["tdu_rate"])
+                                    cfg["tdu_fixed"], cfg["tdu_rate"])
     )
-    bill_df["month"] = bill_df["date"].dt.strftime("%b %Y")
 
     fig2 = px.line(
         bill_df,
         x="month",
         y="est_bill",
         markers=True,
-        labels={"month": "Month", "est_bill": "Est. Bill ($)"},
+        labels={"month": "", "est_bill": "Est. Bill ($)"},
         line_shape="spline",
     )
-    fig2.update_traces(line_color="#00A651", marker_color="#00A651")
+    fig2.update_traces(line_color="#00A651", marker_color="#00A651", line_width=2)
     fig2.update_layout(
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(tickangle=-45),
-        margin=dict(t=30, b=60),
+        xaxis=dict(tickangle=-45, tickfont=dict(size=11)),
+        margin=dict(t=20, b=40, l=20, r=20),
+        height=300,
     )
     st.plotly_chart(fig2, use_container_width=True)
 
@@ -945,6 +972,7 @@ def render_dashboard(cfg: dict) -> None:
 def render_compare(cfg: dict) -> None:
     """Render the Compare Plans tab."""
     st.header("Compare Plans")
+    st.caption("Live rates pulled directly from PowerToChoose — the official Texas plan registry.")
 
     col_fetch, col_filters = st.columns([2, 3])
 
@@ -1048,13 +1076,11 @@ def render_compare(cfg: dict) -> None:
         height=400,
     )
 
-    st.markdown(f"*Showing {len(filtered)} plans after filtering.*")
+    st.caption(f"{len(filtered)} plans shown. Select one below to see enrollment details.")
 
     st.markdown("---")
 
-    # Top plan cards with Select buttons
-    st.subheader("Top Plans — Select One to Enroll")
-    st.caption("Click **Select this plan** on any row to load it into the Enroll tab.")
+    st.subheader("Top Plans")
 
     top_n = min(10, len(filtered))
     for i, (_, row) in enumerate(filtered.head(top_n).iterrows()):
@@ -1076,7 +1102,7 @@ def render_compare(cfg: dict) -> None:
         with col_btn:
             if st.button("Select →", key=f"select_plan_{i}"):
                 st.session_state["selected_plan"] = row.to_dict()
-                st.success(f"✓ Selected **{provider} — {name}**. Switch to the **Enroll** tab.")
+                st.success(f"✓ Selected **{provider} — {name}**. Go to the Decision tab to enroll.")
 
         st.divider()
 
@@ -1516,7 +1542,7 @@ def main() -> None:
         st.stop()
 
     st.title("⚡ Texas Electricity Plan Manager")
-    st.caption("Analyse your usage, compare live plans, and make an informed switch decision.")
+    st.caption("Know exactly what you're paying, find a better plan, and never miss a renewal.")
 
     # Render sidebar and collect plan configuration
     cfg = render_sidebar()
