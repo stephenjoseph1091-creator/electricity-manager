@@ -647,11 +647,9 @@ def ai_chat(messages: list[dict], system_prompt: str, api_key: str) -> str:
 # ---------------------------------------------------------------------------
 
 def render_sidebar() -> dict:
-    """
-    Render the sidebar. Three inputs only: CSV, EFL PDF, ZIP code.
-    Everything else is parsed automatically. Returns cfg dict.
-    """
+    """Render the sidebar. Returns cfg dict."""
     st.sidebar.header("⚡ Setup")
+    st.sidebar.caption("Upload your files and click Analyze — everything else is automatic.")
 
     uploaded_csv = st.sidebar.file_uploader(
         "1 · Smart Meter Texas CSV",
@@ -671,11 +669,18 @@ def render_sidebar() -> dict:
         placeholder="e.g. 75063",
     )
 
+    notif_email = st.sidebar.text_input(
+        "4 · Your email for alerts",
+        value=st.session_state.get("notif_email", ""),
+        placeholder="you@example.com",
+        help="Get notified 60, 30, and 14 days before your contract ends — and when a better plan appears.",
+        key="notif_email",
+    )
+
     st.sidebar.markdown("---")
 
     if st.sidebar.button("Analyze My Plan →", type="primary",
                          disabled=(uploaded_csv is None and uploaded_efl is None)):
-        # Parse CSV
         if uploaded_csv is not None:
             with st.spinner("Reading usage data…"):
                 df = parse_smt_csv(uploaded_csv)
@@ -684,7 +689,6 @@ def render_sidebar() -> dict:
             else:
                 st.sidebar.error("Could not parse CSV — make sure it's a Smart Meter Texas monthly export.")
 
-        # Parse EFL
         if uploaded_efl is not None:
             with st.spinner("Reading EFL…"):
                 efl_result = parse_efl_pdf(uploaded_efl)
@@ -693,39 +697,43 @@ def render_sidebar() -> dict:
             else:
                 st.session_state["efl_data"] = efl_result
 
-        # Save ZIP
         st.session_state["zip_code"] = zip_code
+
+        # Auto-save notification profile if email provided and EFL parsed
+        if notif_email and st.session_state.get("efl_data"):
+            ok, _ = _save_profile(
+                notif_email,
+                st.session_state["efl_data"],
+                zip_code,
+            )
 
         st.rerun()
 
     # ── Display parsed plan info (read-only) ──────────────────────────────
-    efl = st.session_state.get("efl_data", {})
+    efl      = st.session_state.get("efl_data", {})
     usage_df = st.session_state.get("usage_df")
 
     if efl or usage_df is not None:
         st.sidebar.markdown("---")
 
     if usage_df is not None:
-        st.sidebar.success(f"✓ Usage data: {len(usage_df)} billing periods")
+        st.sidebar.success(f"✓ Usage: {len(usage_df)} billing periods loaded")
 
     if efl:
-        provider    = efl.get("form_provider", "")
-        plan_name   = efl.get("form_plan_name", "")
-        term        = int(efl.get("form_contract_term", 0))
-        etf_val     = float(efl.get("form_etf", 0))
-        base        = float(efl.get("form_base_charge", 0))
-        energy_c    = float(efl.get("form_energy_charge_cents", 0))
-        tdu_fix     = float(efl.get("form_tdu_fixed", 0))
-        tdu_var_c   = float(efl.get("form_tdu_variable_cents", 0))
-        c_start     = efl.get("form_contract_start")
+        provider  = efl.get("form_provider", "")
+        plan_name = efl.get("form_plan_name", "")
+        term      = int(efl.get("form_contract_term", 0))
+        etf_val   = float(efl.get("form_etf", 0))
+        energy_c  = float(efl.get("form_energy_charge_cents", 0))
+        tdu_var_c = float(efl.get("form_tdu_variable_cents", 0))
+        base      = float(efl.get("form_base_charge", 0))
+        tdu_fix   = float(efl.get("form_tdu_fixed", 0))
+        c_start   = efl.get("form_contract_start")
 
         c_end_str = ""
         if c_start and term:
             c_end = c_start + relativedelta(months=term)
             c_end_str = f" → {c_end.strftime('%b %d, %Y')}"
-
-        total_rate = energy_c + tdu_var_c
-        fixed_mo   = base + tdu_fix
 
         st.sidebar.success("✓ EFL parsed")
         st.sidebar.markdown(
@@ -733,62 +741,34 @@ def render_sidebar() -> dict:
             f"{plan_name}  \n"
             f"{'Contract: ' + c_start.strftime('%b %d, %Y') + c_end_str if c_start else ''}  \n"
             f"ETF: **${etf_val:.0f}**  \n"
-            f"Rate: **{total_rate:.2f}¢/kWh** + **${fixed_mo:.2f}/mo** fixed"
+            f"Rate: **{energy_c + tdu_var_c:.2f}¢/kWh** + **${base + tdu_fix:.2f}/mo** fixed"
         )
 
-    # ── Notification profile ───────────────────────────────────────────────
-    efl_ready = bool(st.session_state.get("efl_data"))
-    if efl_ready:
+    # ── Notification actions (shown after analysis) ────────────────────────
+    if efl and notif_email:
         st.sidebar.markdown("---")
-        st.sidebar.subheader("📬 Email Notifications")
-        st.sidebar.caption(
-            "Get emailed 60, 30, and 14 days before your contract ends — "
-            "and whenever a significantly better plan appears."
-        )
-        notif_email = st.sidebar.text_input(
-            "Your email address",
-            placeholder="you@example.com",
-            key="notif_email",
-        )
-        if st.sidebar.button(
-            "Save for Notifications",
-            disabled=not notif_email,
-            help="Saves your plan details so the monitor can watch rates on your behalf.",
-        ):
-            ok, msg = _save_profile(
-                notif_email,
-                st.session_state["efl_data"],
-                st.session_state.get("zip_code", ""),
-            )
+        st.sidebar.caption(f"📬 Alerts will be sent to **{notif_email}**")
+        col_test, col_remove = st.sidebar.columns(2)
+
+        if col_test.button("Send test", help="Preview what an alert email looks like"):
+            _cs = efl.get("form_contract_start", date.today())
+            _ct = int(efl.get("form_contract_term", 12))
+            ok, msg = _send_test_email(notif_email, {
+                "provider":     efl.get("form_provider", ""),
+                "plan_name":    efl.get("form_plan_name", ""),
+                "contract_end": _cs + relativedelta(months=_ct),
+            })
             if ok:
                 st.sidebar.success(msg)
             else:
                 st.sidebar.error(msg)
 
-        if notif_email:
-            col_test, col_remove = st.sidebar.columns(2)
-            if col_test.button("Send test email", disabled=not notif_email):
-                # cfg isn't built yet at this point, build a minimal version
-                _efl = st.session_state.get("efl_data", {})
-                _cs  = _efl.get("form_contract_start", date.today())
-                _ct  = int(_efl.get("form_contract_term", 12))
-                _mini_cfg = {
-                    "provider":     _efl.get("form_provider", ""),
-                    "plan_name":    _efl.get("form_plan_name", ""),
-                    "contract_end": _cs + relativedelta(months=_ct),
-                }
-                ok, msg = _send_test_email(notif_email, _mini_cfg)
-                if ok:
-                    st.sidebar.success(msg)
-                else:
-                    st.sidebar.error(msg)
-
-            if col_remove.button("Remove me", help="Stop receiving email alerts"):
-                ok, msg = _remove_profile(notif_email)
-                if ok:
-                    st.sidebar.success(msg)
-                else:
-                    st.sidebar.error(msg)
+        if col_remove.button("Remove me", help="Stop all email alerts"):
+            ok, msg = _remove_profile(notif_email)
+            if ok:
+                st.sidebar.success(msg)
+            else:
+                st.sidebar.error(msg)
 
     # ── Build cfg from parsed EFL ─────────────────────────────────────────
     efl             = st.session_state.get("efl_data", {})
