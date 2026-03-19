@@ -6,6 +6,7 @@ Streamlit web app for comparing plans, tracking usage, and managing enrollments.
 import io
 import math
 import re
+import uuid
 from datetime import date, datetime, timedelta
 
 import anthropic
@@ -98,6 +99,7 @@ def _save_profile(email: str, efl: dict, zip_code: str) -> tuple[bool, str]:
         "alert_60_sent":         False,
         "alert_30_sent":         False,
         "alert_14_sent":         False,
+        "unsubscribe_token":     str(uuid.uuid4()),
     }
     try:
         client.table("user_profiles").upsert(row, on_conflict="email").execute()
@@ -118,6 +120,27 @@ def _remove_profile(email: str) -> tuple[bool, str]:
         return False, f"Could not remove profile: {exc}"
 
 
+APP_URL = "https://electricity-manager.streamlit.app"
+
+
+def _get_unsubscribe_url(email: str) -> str:
+    """Look up the unsubscribe token for an email and return the unsubscribe URL."""
+    client = _get_supabase_client()
+    if client is None:
+        return APP_URL
+    try:
+        result = client.table("user_profiles").select("unsubscribe_token").eq(
+            "email", email.strip().lower()
+        ).execute()
+        if result.data:
+            token = result.data[0].get("unsubscribe_token", "")
+            if token:
+                return f"{APP_URL}/?unsubscribe={token}"
+    except Exception:
+        pass
+    return APP_URL
+
+
 def _send_test_email(email: str, cfg: dict) -> tuple[bool, str]:
     """Send a sample alert email so the user can preview the format."""
     try:
@@ -127,10 +150,11 @@ def _send_test_email(email: str, cfg: dict) -> tuple[bool, str]:
     except Exception:
         return False, "Resend not configured in secrets."
 
-    provider  = cfg.get("provider", "Your Provider")
-    plan_name = cfg.get("plan_name", "your current plan")
-    end_date  = cfg.get("contract_end")
-    end_str   = end_date.strftime("%B %d, %Y") if end_date else "N/A"
+    provider      = cfg.get("provider", "Your Provider")
+    plan_name     = cfg.get("plan_name", "your current plan")
+    end_date      = cfg.get("contract_end")
+    end_str       = end_date.strftime("%B %d, %Y") if end_date else "N/A"
+    unsub_url     = _get_unsubscribe_url(email)
 
     html = f"""
     <div style="font-family:sans-serif;max-width:640px;margin:0 auto;color:#222">
@@ -152,7 +176,7 @@ def _send_test_email(email: str, cfg: dict) -> tuple[bool, str]:
         </ul>
         <hr style="border:none;border-top:1px solid #e0e0e0;margin:20px 0">
         <p style="font-size:12px;color:#888">
-          To stop receiving alerts, open the app and click <strong>Remove me from notifications</strong> in the sidebar.
+          Don't want these emails? <a href="{unsub_url}" style="color:#00A651">Unsubscribe in one click</a>.
         </p>
       </div>
     </div>
@@ -1457,6 +1481,29 @@ def render_decision(cfg: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    # ── Handle one-click unsubscribe ──────────────────────────────────────
+    token = st.query_params.get("unsubscribe")
+    if token:
+        st.title("⚡ Texas Electricity Plan Monitor")
+        client = _get_supabase_client()
+        unsubscribed = False
+        if client:
+            try:
+                result = client.table("user_profiles").select("email").eq(
+                    "unsubscribe_token", token
+                ).execute()
+                if result.data:
+                    email = result.data[0]["email"]
+                    client.table("user_profiles").delete().eq("unsubscribe_token", token).execute()
+                    st.success(f"✓ You've been unsubscribed. **{email}** will no longer receive alerts.")
+                    unsubscribed = True
+            except Exception:
+                pass
+        if not unsubscribed:
+            st.warning("This unsubscribe link has already been used or is invalid.")
+        st.markdown("You can re-enroll any time by visiting the app and entering your email.")
+        st.stop()
+
     st.title("⚡ Texas Electricity Plan Manager")
     st.caption("Analyse your usage, compare live plans, and make an informed switch decision.")
 

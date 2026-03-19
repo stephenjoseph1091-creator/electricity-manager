@@ -167,12 +167,17 @@ def _plan_row(p: dict) -> str:
     )
 
 
+APP_URL = "https://electricity-manager.streamlit.app"
+
+
 def build_email_html(profile: dict, trigger: str, days_remaining: int,
                      contract_end: date, top_plans: list[dict]) -> tuple[str, str]:
     """Return (subject, html_body) for the alert email."""
-    name     = profile.get("provider", "Your Provider")
-    plan     = profile.get("plan_name", "your current plan")
-    end_str  = contract_end.strftime("%B %d, %Y")
+    name      = profile.get("provider", "Your Provider")
+    plan      = profile.get("plan_name", "your current plan")
+    end_str   = contract_end.strftime("%B %d, %Y")
+    token     = profile.get("unsubscribe_token", "")
+    unsub_url = f"{APP_URL}/?unsubscribe={token}" if token else APP_URL
 
     if trigger == "expired":
         subject = f"⚡ Action needed: Your electricity contract expired {abs(days_remaining)} days ago"
@@ -236,8 +241,8 @@ def build_email_html(profile: dict, trigger: str, days_remaining: int,
         <p style="font-size:12px;color:#888;margin-top:24px">
           Savings are estimated vs continuing on your current plan for 12 months after contract end,
           using typical Texas seasonal usage patterns. Always read the EFL before enrolling.<br><br>
-          You're receiving this because you signed up at the Texas Electricity Plan Manager.
-          To stop receiving alerts, open the app and click <strong>Remove me from notifications</strong> in the sidebar.
+          You're receiving this because you signed up at the Texas Electricity Plan Monitor.
+          Don't want these emails? <a href="{unsub_url}" style="color:#00A651">Unsubscribe in one click</a>.
         </p>
       </div>
     </div>
