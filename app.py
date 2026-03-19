@@ -35,8 +35,7 @@ def _init_state() -> None:
         "usage_df": None,          # parsed CSV DataFrame
         "plans_df": None,          # fetched PowerToChoose plans
         "selected_plan": None,     # plan chosen in Compare tab
-        "chat_history": [],        # Enroll tab chat messages
-        "anthropic_api_key": "",   # optional key from sidebar
+        "chat_history": [],        # AI chat messages
         "efl_data": {},            # parsed EFL values
         "zip_code": "",            # entered by user
     }
@@ -58,13 +57,11 @@ PTC_URL = "http://api.powertochoose.org/api/PowerToChoose/plans?zip_code={zip_co
 # ---------------------------------------------------------------------------
 
 def _get_api_key() -> str | None:
-    """Return API key from st.secrets if available, otherwise session state."""
+    """Return Anthropic API key from st.secrets."""
     try:
         return st.secrets["ANTHROPIC_API_KEY"]
     except (KeyError, FileNotFoundError):
-        pass
-    key = st.session_state.get("anthropic_api_key", "").strip()
-    return key if key else None
+        return None
 
 
 def _get_supabase_client():
@@ -675,16 +672,6 @@ def render_sidebar() -> dict:
             f"ETF: **${etf_val:.0f}**  \n"
             f"Rate: **{total_rate:.2f}¢/kWh** + **${fixed_mo:.2f}/mo** fixed"
         )
-
-    # ── AI key ────────────────────────────────────────────────────────────
-    st.sidebar.markdown("---")
-    api_key_input = st.sidebar.text_input(
-        "Anthropic API Key (optional)",
-        type="password",
-        value=st.session_state.get("anthropic_api_key", ""),
-        help="Enables AI explanations. Get one at console.anthropic.com",
-    )
-    st.session_state["anthropic_api_key"] = api_key_input
 
     # ── Notification profile ───────────────────────────────────────────────
     efl_ready = bool(st.session_state.get("efl_data"))
