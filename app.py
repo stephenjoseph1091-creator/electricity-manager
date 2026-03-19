@@ -38,6 +38,7 @@ def _init_state() -> None:
         "selected_plan": None,     # plan chosen in Compare tab
         "chat_history": [],        # AI chat messages
         "efl_data": {},            # parsed EFL values
+        "profile_save_result": None,
         "zip_code": "",            # entered by user
     }
     for key, val in defaults.items():
@@ -725,11 +726,12 @@ def render_sidebar() -> dict:
 
         # Auto-save notification profile if email provided and EFL parsed
         if notif_email and st.session_state.get("efl_data"):
-            ok, _ = _save_profile(
+            ok, msg = _save_profile(
                 notif_email,
                 st.session_state["efl_data"],
                 zip_code,
             )
+            st.session_state["profile_save_result"] = (ok, msg)
 
         st.rerun()
 
@@ -767,6 +769,15 @@ def render_sidebar() -> dict:
             f"ETF: **${etf_val:.0f}**  \n"
             f"Rate: **{energy_c + tdu_var_c:.2f}¢/kWh** + **${base + tdu_fix:.2f}/mo** fixed"
         )
+
+    # ── Show profile save result from last Analyze click ──────────────────
+    save_result = st.session_state.pop("profile_save_result", None)
+    if save_result:
+        ok, msg = save_result
+        if ok:
+            st.sidebar.success(msg)
+        else:
+            st.sidebar.error(f"Notification setup failed: {msg}")
 
     # ── Notification actions (shown after analysis) ────────────────────────
     if efl and notif_email:
