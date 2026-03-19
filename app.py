@@ -39,6 +39,7 @@ def _init_state() -> None:
         "chat_history": [],        # AI chat messages
         "efl_data": {},            # parsed EFL values
         "profile_save_result": None,
+        "contract_start_override": None,
         "zip_code": "",            # entered by user
     }
     for key, val in defaults.items():
@@ -754,21 +755,42 @@ def render_sidebar() -> dict:
         tdu_var_c = float(efl.get("form_tdu_variable_cents", 0))
         base      = float(efl.get("form_base_charge", 0))
         tdu_fix   = float(efl.get("form_tdu_fixed", 0))
-        c_start   = efl.get("form_contract_start")
+        efl_start = efl.get("form_contract_start")
 
-        c_end_str = ""
-        if c_start and term:
-            c_end = c_start + relativedelta(months=term)
-            c_end_str = f" → {c_end.strftime('%b %d, %Y')}"
+        # Use override start date if provided, else fall back to EFL date
+        override_start = st.session_state.get("contract_start_override")
+        effective_start = override_start if override_start else efl_start
+        est_end = (effective_start + relativedelta(months=term)) if (effective_start and term) else None
+        end_label = "Est. end" if not override_start else "Contract end"
+        end_str = est_end.strftime("%b %d, %Y") if est_end else "unknown"
 
         st.sidebar.success("✓ EFL parsed")
         st.sidebar.markdown(
             f"**{provider}**  \n"
             f"{plan_name}  \n"
-            f"{'Contract: ' + c_start.strftime('%b %d, %Y') + c_end_str if c_start else ''}  \n"
             f"ETF: **${etf_val:.0f}**  \n"
-            f"Rate: **{energy_c + tdu_var_c:.2f}¢/kWh** + **${base + tdu_fix:.2f}/mo** fixed"
+            f"Rate: **{energy_c + tdu_var_c:.2f}¢/kWh** + **${base + tdu_fix:.2f}/mo** fixed  \n"
+            f"{end_label}: **{end_str}**"
         )
+
+        # Optional contract start date override
+        st.sidebar.markdown("")
+        st.sidebar.caption(
+            "The end date above is estimated from your EFL. "
+            "If your provider shows a different date, enter your actual service start date below."
+        )
+        start_override_input = st.sidebar.date_input(
+            "Actual contract start date (optional)",
+            value=st.session_state.get("contract_start_override", None),
+            min_value=date(2020, 1, 1),
+            max_value=date.today(),
+            key="start_override_input",
+            help="Check your provider's website or account portal for the exact date.",
+        )
+        if start_override_input and start_override_input != efl_start:
+            st.session_state["contract_start_override"] = start_override_input
+        elif not start_override_input:
+            st.session_state["contract_start_override"] = None
 
     # ── Show profile save result from last Analyze click ──────────────────
     save_result = st.session_state.pop("profile_save_result", None)
@@ -809,11 +831,13 @@ def render_sidebar() -> dict:
     efl             = st.session_state.get("efl_data", {})
     zip_code_stored = st.session_state.get("zip_code", zip_code)
 
-    contract_start  = efl.get("form_contract_start", date.today())
-    contract_term   = int(efl.get("form_contract_term", 12))
-    contract_end    = contract_start + relativedelta(months=contract_term)
-    today           = date.today()
-    delta           = relativedelta(contract_end, today)
+    efl_start        = efl.get("form_contract_start", date.today())
+    override_start   = st.session_state.get("contract_start_override")
+    contract_start   = override_start if override_start else efl_start
+    contract_term    = int(efl.get("form_contract_term", 12))
+    contract_end     = contract_start + relativedelta(months=contract_term)
+    today            = date.today()
+    delta            = relativedelta(contract_end, today)
     months_remaining = max(0, delta.months + delta.years * 12)
 
     base_charge          = float(efl.get("form_base_charge", 0.0))
