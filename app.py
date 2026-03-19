@@ -744,9 +744,36 @@ def render_sidebar() -> dict:
         st.rerun()
 
     # ── Display parsed results (read-only) ────────────────────────────────
-    efl      = st.session_state.get("efl_data", {})
-    usage_df = st.session_state.get("usage_df")
+    efl         = st.session_state.get("efl_data", {})
+    usage_df    = st.session_state.get("usage_df")
     notif_email = st.session_state.get("notif_email_stored", "")
+
+    # ── Notification actions (shown as soon as email is on file) ──────────
+    if notif_email:
+        st.sidebar.markdown("---")
+        st.sidebar.caption(f"📬 Alerts → **{notif_email}**")
+        col_test, col_remove = st.sidebar.columns(2)
+
+        if col_test.button("Send test", help="Preview what an alert email looks like"):
+            _efl = st.session_state.get("efl_data", {})
+            _cs  = st.session_state.get("contract_start_override") or _efl.get("form_contract_start", date.today())
+            _ct  = int(_efl.get("form_contract_term", 12))
+            ok, msg = _send_test_email(notif_email, {
+                "provider":     _efl.get("form_provider", ""),
+                "plan_name":    _efl.get("form_plan_name", ""),
+                "contract_end": _cs + relativedelta(months=_ct),
+            })
+            if ok:
+                st.sidebar.success(msg)
+            else:
+                st.sidebar.error(msg)
+
+        if col_remove.button("Remove me", help="Stop all email alerts"):
+            ok, msg = _remove_profile(notif_email)
+            if ok:
+                st.sidebar.success(msg)
+            else:
+                st.sidebar.error(msg)
 
     if efl or usage_df is not None:
         st.sidebar.markdown("---")
@@ -789,31 +816,6 @@ def render_sidebar() -> dict:
         else:
             st.sidebar.error(f"Notification setup failed: {msg}")
 
-    # ── Notification actions ───────────────────────────────────────────────
-    if efl and notif_email:
-        st.sidebar.markdown("---")
-        st.sidebar.caption(f"📬 Alerts → **{notif_email}**")
-        col_test, col_remove = st.sidebar.columns(2)
-
-        if col_test.button("Send test", help="Preview what an alert email looks like"):
-            _cs  = st.session_state.get("contract_start_override") or efl.get("form_contract_start", date.today())
-            _ct  = int(efl.get("form_contract_term", 12))
-            ok, msg = _send_test_email(notif_email, {
-                "provider":     efl.get("form_provider", ""),
-                "plan_name":    efl.get("form_plan_name", ""),
-                "contract_end": _cs + relativedelta(months=_ct),
-            })
-            if ok:
-                st.sidebar.success(msg)
-            else:
-                st.sidebar.error(msg)
-
-        if col_remove.button("Remove me", help="Stop all email alerts"):
-            ok, msg = _remove_profile(notif_email)
-            if ok:
-                st.sidebar.success(msg)
-            else:
-                st.sidebar.error(msg)
 
     # ── Build cfg from parsed EFL ─────────────────────────────────────────
     efl             = st.session_state.get("efl_data", {})
