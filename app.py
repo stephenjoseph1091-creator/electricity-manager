@@ -677,36 +677,42 @@ def render_sidebar() -> dict:
     st.sidebar.header("⚡ Setup")
     st.sidebar.caption("Upload your files and click Analyze — everything else is automatic.")
 
-    uploaded_csv = st.sidebar.file_uploader(
-        "1 · Smart Meter Texas CSV",
-        type=["csv"], key="csv_uploader",
-        help="Download from SmartMeterTexas.com → My Account → Usage → Monthly → Export CSV",
-    )
+    with st.sidebar.form("setup_form", clear_on_submit=False):
+        uploaded_csv = st.file_uploader(
+            "1 · Smart Meter Texas CSV",
+            type=["csv"], key="csv_uploader",
+            help="Download from SmartMeterTexas.com → My Account → Usage → Monthly → Export CSV",
+        )
+        uploaded_efl = st.file_uploader(
+            "2 · Electricity Facts Label (PDF)",
+            type=["pdf"], key="efl_uploader",
+            help="The 1–2 page PDF from your provider — in your welcome email or provider website",
+        )
+        zip_code = st.text_input(
+            "3 · Your ZIP code",
+            value=st.session_state.get("zip_code", ""),
+            placeholder="e.g. 75063",
+        )
+        notif_email = st.text_input(
+            "4 · Your email for alerts",
+            value=st.session_state.get("notif_email_stored", ""),
+            placeholder="you@example.com",
+            help="Get notified 60, 30, and 14 days before your contract ends — and when a better plan appears.",
+        )
+        contract_start_input = st.date_input(
+            "5 · Service start date (optional)",
+            value=st.session_state.get("contract_start_override", None),
+            min_value=date(2020, 1, 1),
+            max_value=date.today(),
+            help="If your provider's portal shows a different contract end date, enter your actual service start date here to override the estimate.",
+        )
+        submitted = st.form_submit_button(
+            "Analyze My Plan →",
+            type="primary",
+            disabled=(uploaded_csv is None and uploaded_efl is None),
+        )
 
-    uploaded_efl = st.sidebar.file_uploader(
-        "2 · Electricity Facts Label (PDF)",
-        type=["pdf"], key="efl_uploader",
-        help="The 1–2 page PDF from your provider — in your welcome email or provider website",
-    )
-
-    zip_code = st.sidebar.text_input(
-        "3 · Your ZIP code",
-        value=st.session_state.get("zip_code", ""),
-        placeholder="e.g. 75063",
-    )
-
-    notif_email = st.sidebar.text_input(
-        "4 · Your email for alerts",
-        value=st.session_state.get("notif_email", ""),
-        placeholder="you@example.com",
-        help="Get notified 60, 30, and 14 days before your contract ends — and when a better plan appears.",
-        key="notif_email",
-    )
-
-    st.sidebar.markdown("---")
-
-    if st.sidebar.button("Analyze My Plan →", type="primary",
-                         disabled=(uploaded_csv is None and uploaded_efl is None)):
+    if submitted:
         if uploaded_csv is not None:
             with st.spinner("Reading usage data…"):
                 df = parse_smt_csv(uploaded_csv)
@@ -723,9 +729,10 @@ def render_sidebar() -> dict:
             else:
                 st.session_state["efl_data"] = efl_result
 
-        st.session_state["zip_code"] = zip_code
+        st.session_state["zip_code"]              = zip_code
+        st.session_state["notif_email_stored"]    = notif_email
+        st.session_state["contract_start_override"] = contract_start_input if contract_start_input else None
 
-        # Auto-save notification profile if email provided and EFL parsed
         if notif_email and st.session_state.get("efl_data"):
             ok, msg = _save_profile(
                 notif_email,
@@ -736,9 +743,10 @@ def render_sidebar() -> dict:
 
         st.rerun()
 
-    # ── Display parsed plan info (read-only) ──────────────────────────────
+    # ── Display parsed results (read-only) ────────────────────────────────
     efl      = st.session_state.get("efl_data", {})
     usage_df = st.session_state.get("usage_df")
+    notif_email = st.session_state.get("notif_email_stored", "")
 
     if efl or usage_df is not None:
         st.sidebar.markdown("---")
@@ -757,12 +765,11 @@ def render_sidebar() -> dict:
         tdu_fix   = float(efl.get("form_tdu_fixed", 0))
         efl_start = efl.get("form_contract_start")
 
-        # Use override start date if provided, else fall back to EFL date
-        override_start = st.session_state.get("contract_start_override")
+        override_start  = st.session_state.get("contract_start_override")
         effective_start = override_start if override_start else efl_start
-        est_end = (effective_start + relativedelta(months=term)) if (effective_start and term) else None
-        end_label = "Est. end" if not override_start else "Contract end"
-        end_str = est_end.strftime("%b %d, %Y") if est_end else "unknown"
+        est_end   = (effective_start + relativedelta(months=term)) if (effective_start and term) else None
+        end_label = "Est. contract end" if not override_start else "Contract end"
+        end_str   = est_end.strftime("%b %d, %Y") if est_end else "unknown"
 
         st.sidebar.success("✓ EFL parsed")
         st.sidebar.markdown(
@@ -773,26 +780,7 @@ def render_sidebar() -> dict:
             f"{end_label}: **{end_str}**"
         )
 
-        # Optional contract start date override
-        st.sidebar.markdown("")
-        st.sidebar.caption(
-            "The end date above is estimated from your EFL. "
-            "If your provider shows a different date, enter your actual service start date below."
-        )
-        start_override_input = st.sidebar.date_input(
-            "Actual contract start date (optional)",
-            value=st.session_state.get("contract_start_override", None),
-            min_value=date(2020, 1, 1),
-            max_value=date.today(),
-            key="start_override_input",
-            help="Check your provider's website or account portal for the exact date.",
-        )
-        if start_override_input and start_override_input != efl_start:
-            st.session_state["contract_start_override"] = start_override_input
-        elif not start_override_input:
-            st.session_state["contract_start_override"] = None
-
-    # ── Show profile save result from last Analyze click ──────────────────
+    # ── Show profile save result ───────────────────────────────────────────
     save_result = st.session_state.pop("profile_save_result", None)
     if save_result:
         ok, msg = save_result
@@ -801,15 +789,15 @@ def render_sidebar() -> dict:
         else:
             st.sidebar.error(f"Notification setup failed: {msg}")
 
-    # ── Notification actions (shown after analysis) ────────────────────────
+    # ── Notification actions ───────────────────────────────────────────────
     if efl and notif_email:
         st.sidebar.markdown("---")
-        st.sidebar.caption(f"📬 Alerts will be sent to **{notif_email}**")
+        st.sidebar.caption(f"📬 Alerts → **{notif_email}**")
         col_test, col_remove = st.sidebar.columns(2)
 
         if col_test.button("Send test", help="Preview what an alert email looks like"):
-            _cs = efl.get("form_contract_start", date.today())
-            _ct = int(efl.get("form_contract_term", 12))
+            _cs  = st.session_state.get("contract_start_override") or efl.get("form_contract_start", date.today())
+            _ct  = int(efl.get("form_contract_term", 12))
             ok, msg = _send_test_email(notif_email, {
                 "provider":     efl.get("form_provider", ""),
                 "plan_name":    efl.get("form_plan_name", ""),
@@ -829,7 +817,7 @@ def render_sidebar() -> dict:
 
     # ── Build cfg from parsed EFL ─────────────────────────────────────────
     efl             = st.session_state.get("efl_data", {})
-    zip_code_stored = st.session_state.get("zip_code", zip_code)
+    zip_code_stored = st.session_state.get("zip_code", "")
 
     efl_start        = efl.get("form_contract_start", date.today())
     override_start   = st.session_state.get("contract_start_override")
